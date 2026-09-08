@@ -34,3 +34,12 @@ impl ZlScriptLoader {
         Path::new("./zsrc").exists() || Path::new("/etc/zenobox/zsrc").exists()
     }
 }
+
+use zenocore::Engine;
+use super::slots::register_slots;
+
+pub fn create_engine() -> Engine {
+    let mut engine = Engine::new();
+    register_slots(&mut engine);
+    engine
+}

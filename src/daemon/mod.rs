@@ -1,6 +1,7 @@
 pub mod docker_api;
 pub mod native_api;
 pub mod zl_engine;
+pub mod slots;
 
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
