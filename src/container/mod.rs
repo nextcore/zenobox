@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs::{self, File};
-use std::io::Write;
 use std::process::Command;
 use serde_json::json;
 
 use crate::utils::{
     get_data_dir, container_dir, bundle_dir, rootfs_dir, state_file, log_path,
     runc_exec, run_privileged_status, get_runc_bin,
-    save_container_state, load_container_state,
+    save_container_state, load_container_state, rotate_log_file_if_needed,
     ContainerState, parse_image_ref
 };
 use crate::image::mount_overlayfs;
@@ -488,22 +487,6 @@ pub fn container_create(
         }
     }
 
-    let container_group_path = bundle_p.join("rootfs").join("etc").join("group");
-    let container_passwd_path = bundle_p.join("rootfs").join("etc").join("passwd");
-    if container_passwd_path.exists() && container_group_path.exists() {
-        if let Ok(passwd_content) = fs::read_to_string(&container_passwd_path) {
-            if passwd_content.contains("bitnami:") {
-                if let Ok(group_content) = fs::read_to_string(&container_group_path) {
-                    if !group_content.contains("bitnami:") {
-                        if let Ok(mut file) = fs::OpenOptions::new().append(true).open(&container_group_path) {
-                            let _ = writeln!(file, "bitnami:x:1000:");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     generate_config_json(
         &bundle_p,
         cmd.clone(),
@@ -565,7 +548,8 @@ pub fn container_start(id: &str) -> Result<(), String> {
     let _ = runc_exec(&["delete", "--force", id]);
 
     let log_p = log_path(&data_dir, id);
-    let log_file = File::create(&log_p).map_err(|e| format!("Failed to create log file: {}", e))?;
+    rotate_log_file_if_needed(&log_p, 10 * 1024 * 1024, 3);
+    let log_file = File::options().create(true).append(true).open(&log_p).map_err(|e| format!("Failed to create log file: {}", e))?;
 
     let runc_bin = get_runc_bin();
     let root = format!("{}/runc", get_data_dir());

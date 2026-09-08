@@ -329,8 +329,86 @@ pub fn run_cmd_status_silent(cmd: &str, args: &[&str]) -> io::Result<std::proces
         .status()
 }
 
+pub struct FileLock {
+    _file: File,
+}
+
+impl FileLock {
+    pub fn acquire_exclusive(lock_path: &Path) -> Result<Self, String> {
+        if let Some(parent) = lock_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let file = File::create(lock_path).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = file.as_raw_fd();
+            let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+            if ret != 0 {
+                return Err(format!("Failed to acquire exclusive file lock: {}", std::io::Error::last_os_error()));
+            }
+        }
+        Ok(FileLock { _file: file })
+    }
+
+    pub fn acquire_shared(lock_path: &Path) -> Result<Self, String> {
+        if let Some(parent) = lock_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let file = File::open(lock_path)
+            .or_else(|_| File::create(lock_path))
+            .map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = file.as_raw_fd();
+            let ret = unsafe { libc::flock(fd, libc::LOCK_SH) };
+            if ret != 0 {
+                return Err(format!("Failed to acquire shared file lock: {}", std::io::Error::last_os_error()));
+            }
+        }
+        Ok(FileLock { _file: file })
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = self._file.as_raw_fd();
+            unsafe { libc::flock(fd, libc::LOCK_UN) };
+        }
+    }
+}
+
+pub fn rotate_log_file_if_needed(log_p: &Path, max_bytes: u64, max_files: usize) {
+    if let Ok(metadata) = fs::metadata(log_p) {
+        if metadata.len() >= max_bytes {
+            for i in (1..max_files).rev() {
+                let src = if i == 1 {
+                    log_p.to_path_buf()
+                } else {
+                    PathBuf::from(format!("{}.{}", log_p.display(), i - 1))
+                };
+                let dst = PathBuf::from(format!("{}.{}", log_p.display(), i));
+                if src.exists() {
+                    let _ = fs::rename(&src, &dst);
+                }
+            }
+        }
+    }
+}
+
+pub fn lock_path(data_dir: &str, name: &str) -> PathBuf {
+    Path::new(data_dir).join("locks").join(format!("{}.lock", name))
+}
+
 pub fn save_container_state(state: &ContainerState) -> Result<(), String> {
     let data_dir = get_data_dir();
+    let l_path = lock_path(&data_dir, &format!("state_{}", state.id));
+    let _guard = FileLock::acquire_exclusive(&l_path)?;
+
     let p = state_file(&data_dir, &state.id);
     let f = File::create(p).map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(f, state).map_err(|e| e.to_string())?;
@@ -339,6 +417,9 @@ pub fn save_container_state(state: &ContainerState) -> Result<(), String> {
 
 pub fn load_container_state(id: &str) -> Result<ContainerState, String> {
     let data_dir = get_data_dir();
+    let l_path = lock_path(&data_dir, &format!("state_{}", id));
+    let _guard = FileLock::acquire_shared(&l_path)?;
+
     let p = state_file(&data_dir, id);
     let f = File::open(p).map_err(|e| e.to_string())?;
     let state: ContainerState = serde_json::from_reader(f).map_err(|e| e.to_string())?;
@@ -346,6 +427,9 @@ pub fn load_container_state(id: &str) -> Result<ContainerState, String> {
 }
 
 pub fn get_networks(data_dir: &str) -> Vec<NetworkConfig> {
+    let l_path = lock_path(data_dir, "networks");
+    let _guard = FileLock::acquire_shared(&l_path);
+
     let path = Path::new(data_dir).join("networks.json");
     if !path.exists() {
         return Vec::new();
@@ -359,8 +443,12 @@ pub fn get_networks(data_dir: &str) -> Vec<NetworkConfig> {
 }
 
 pub fn save_networks(data_dir: &str, nets: &[NetworkConfig]) -> Result<(), String> {
+    let l_path = lock_path(data_dir, "networks");
+    let _guard = FileLock::acquire_exclusive(&l_path)?;
+
     let path = Path::new(data_dir).join("networks.json");
     let f = File::create(path).map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(f, nets).map_err(|e| e.to_string())?;
     Ok(())
 }
+

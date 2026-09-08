@@ -17,7 +17,7 @@ Engineered as a high-performance, drop-in replacement for `docker` and `docker-c
 - **Embedded Docker Compose Engine**: Native Rust YAML orchestrator parsing `docker-compose.yml` without external dependencies.
 - **Virtual Networking & Service Discovery**: Automatic Linux `veth` pair creation, bridge networking (`zenobr0`), iptables NAT rules, and container `/etc/hosts` DNS injection.
 - **Volume Management**: Full support for named volumes and host bind mounts.
-- **Dual Mode Architecture (CLI + Rust Library)**: Operates as a command-line tool (`zenobox`) or can be imported directly as a Rust library crate (`zenobox`) by web frameworks (e.g., Netva) or control panels (e.g., ZenoPanel).
+- **Dual Mode Architecture (CLI + Rust Library)**: Operates as a command-line tool (`zenobox`) or can be imported directly as a Rust library crate (`zenobox`) by web frameworks or control panels (e.g., ZenoPanel).
 
 ---
 
@@ -45,7 +45,7 @@ zenobox image ls
 zenobox volume ls
 zenobox network ls
 
-# 7. Netva REST API & Docker API Daemon
+# 7. REST API & Docker API Daemon
 zenobox daemon --port 2375
 ```
 
@@ -53,7 +53,7 @@ zenobox daemon --port 2375
 
 ## 🌐 REST API & Docker Engine Socket API
 
-Zenobox includes an embedded **Netva Engine (Axum 0.8 / Tokio)** REST API server listening by default on official Docker TCP Port **`2375`**.
+Zenobox includes an embedded **Axum 0.8 / Tokio** REST API server listening by default on official Docker TCP Port **`2375`**.
 
 ### 1. Docker Engine API Compatibility (`/v1.41/...`)
 Allows external tools (such as Portainer, 1Panel, VSCode Docker extension, or standard Docker HTTP clients) to connect directly:
@@ -69,7 +69,7 @@ curl -X POST http://localhost:2375/v1.41/containers/my-container/exec -H "Conten
 curl -X POST http://localhost:2375/v1.41/exec/{exec_id}/start
 ```
 
-### 2. Netva Native REST API (`/api/v1/...`)
+### 2. Native REST API (`/api/v1/...`)
 High-performance REST API for Web Dashboards & UI integrations:
 - `GET /api/v1/containers` - List containers
 - `POST /api/v1/containers` - Create and start container
@@ -133,7 +133,7 @@ Zenobox is engineered as an ultra-lightweight, high-performance **Docker Runtime
 | **Single-Node Containers & Compose** | ✅ Supported | ✅ Fully Supported | **100% Drop-in**: Runs standard `docker run` and `docker-compose.yml`. |
 | **Bridge Networking & Port Forwarding** | ✅ Supported (`docker0`) | ✅ Fully Supported (`zenobr0`) | **Native Linux Bridge**: Full `veth` pairs, `iptables` NAT, & `-p` port mapping. |
 | **Volume & Bind Mounts** | ✅ Supported | ✅ Fully Supported | **Native Mounts**: Supports named volumes (`-v volume_name:/path`) & host bind mounts (`-v /host:/path`). |
-| **REST API Engine** | ✅ Docker Engine API | ✅ Docker v1.41 API + Netva REST API | **100% Panel Compatible**: Connects to 1Panel, Portainer, & Netva UI. |
+| **REST API Engine** | ✅ Docker Engine API | ✅ Docker v1.41 API + Native REST API | **100% Panel Compatible**: Connects to 1Panel, Portainer, & Web Dashboards. |
 | **OCI Image Pulling** | ✅ OCI / Docker V2 | ✅ OCI / Docker V2 | **Full Compatibility**: Pulls from Docker Hub, GHCR, Quay.io. |
 | **Multi-Host Clustering (Swarm)** | ✅ Supported (`docker swarm`) | ❌ Excluded (Single-Node Focus) | Designed for single-node VPS/server runtimes; multi-node Swarm plugins omitted. |
 | **OS Compatibility** | Linux, macOS (Desktop), Windows | Native Linux / Alpine (WSL2 on Win/macOS) | Direct Linux Kernel OCI container execution. |

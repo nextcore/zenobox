@@ -1,0 +1,53 @@
+# zsrc/native_api.zl - Zenobox Native REST API Endpoints
+
+# 1. Native List Containers
+http.get: '/api/v1/containers' {
+    let show_all = $query.all == 'true' || $query.all == '1'
+    box.list_containers: {
+        all: show_all
+        as: $containers
+    }
+    http.json: {
+        success: true
+        data: $containers
+    }
+}
+
+# 2. Native Create & Start Container
+http.post: '/api/v1/containers' {
+    http.json_body: { as: $body }
+    box.create_container: {
+        name: $body.name
+        image: $body.image
+        cmd: $body.cmd
+        env: $body.env
+        as: $res
+    }
+    box.start_container: {
+        id: $res.id
+        as: $start_res
+    }
+    http.json: {
+        success: true
+        message: 'Container created and started'
+        container_id: $res.id
+    }
+}
+
+# 3. Native List Cached OCI Images
+http.get: '/api/v1/images' {
+    box.list_images: { as: $images }
+    http.json: {
+        success: true
+        data: $images
+    }
+}
+
+# 4. Native List Networks
+http.get: '/api/v1/networks' {
+    box.list_networks: { as: $networks }
+    http.json: {
+        success: true
+        data: $networks
+    }
+}

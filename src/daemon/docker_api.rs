@@ -1,8 +1,8 @@
 use axum::{
     extract::{Path, Query},
-    http::StatusCode,
+    http::{header::HeaderName, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post, delete},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -65,37 +65,48 @@ pub struct ExecStartPayload {
 }
 
 pub fn docker_router() -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/_ping", get(ping))
-        .route("/v1.41/_ping", get(ping))
         .route("/info", get(docker_info))
-        .route("/v1.41/info", get(docker_info))
         .route("/containers/json", get(list_containers_docker))
-        .route("/v1.41/containers/json", get(list_containers_docker))
         .route("/containers/create", post(create_container_docker))
-        .route("/v1.41/containers/create", post(create_container_docker))
         .route("/containers/{id}/start", post(start_container_docker))
-        .route("/v1.41/containers/{id}/start", post(start_container_docker))
         .route("/containers/{id}/stop", post(stop_container_docker))
-        .route("/v1.41/containers/{id}/stop", post(stop_container_docker))
         .route("/containers/{id}", delete(delete_container_docker))
-        .route("/v1.41/containers/{id}", delete(delete_container_docker))
         .route("/containers/{id}/logs", get(get_container_logs_docker))
-        .route("/v1.41/containers/{id}/logs", get(get_container_logs_docker))
         .route("/containers/{id}/exec", post(create_exec_docker))
-        .route("/v1.41/containers/{id}/exec", post(create_exec_docker))
         .route("/exec/{id}/start", post(start_exec_docker))
-        .route("/v1.41/exec/{id}/start", post(start_exec_docker))
         .route("/exec/{id}/json", get(inspect_exec_docker))
-        .route("/v1.41/exec/{id}/json", get(inspect_exec_docker))
         .route("/images/json", get(list_images_docker))
-        .route("/v1.41/images/json", get(list_images_docker))
-        .route("/images/create", post(pull_image_docker))
-        .route("/v1.41/images/create", post(pull_image_docker))
+        .route("/images/create", post(pull_image_docker));
+
+    let versions = ["v1.40", "v1.41", "v1.42", "v1.43", "v1.44", "v1.45", "v1.46", "v1.47"];
+    for v in versions {
+        router = router
+            .route(&format!("/{}/_ping", v), get(ping))
+            .route(&format!("/{}/info", v), get(docker_info))
+            .route(&format!("/{}/containers/json", v), get(list_containers_docker))
+            .route(&format!("/{}/containers/create", v), post(create_container_docker))
+            .route(&format!("/{}/containers/{{id}}/start", v), post(start_container_docker))
+            .route(&format!("/{}/containers/{{id}}/stop", v), post(stop_container_docker))
+            .route(&format!("/{}/containers/{{id}}", v), delete(delete_container_docker))
+            .route(&format!("/{}/containers/{{id}}/logs", v), get(get_container_logs_docker))
+            .route(&format!("/{}/containers/{{id}}/exec", v), post(create_exec_docker))
+            .route(&format!("/{}/exec/{{id}}/start", v), post(start_exec_docker))
+            .route(&format!("/{}/exec/{{id}}/json", v), get(inspect_exec_docker))
+            .route(&format!("/{}/images/json", v), get(list_images_docker))
+            .route(&format!("/{}/images/create", v), post(pull_image_docker));
+    }
+
+    router
 }
 
-async fn ping() -> &'static str {
-    "OK"
+async fn ping() -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(HeaderName::from_static("api-version"), "1.41".parse().unwrap());
+    headers.insert(HeaderName::from_static("docker-experimental"), "false".parse().unwrap());
+    headers.insert(HeaderName::from_static("builder-version"), "zenobox/0.1.0".parse().unwrap());
+    (StatusCode::OK, headers, "OK").into_response()
 }
 
 async fn docker_info() -> Json<serde_json::Value> {

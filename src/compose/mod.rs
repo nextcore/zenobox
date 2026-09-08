@@ -462,6 +462,66 @@ fn inject_hosts_entries(
     Ok(())
 }
 
+fn expand_env_vars(s: &str, loaded_env: &HashMap<String, String>) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            if chars.peek() == Some(&'{') {
+                chars.next();
+                let mut var_expr = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch == '}' {
+                        chars.next();
+                        break;
+                    }
+                    var_expr.push(chars.next().unwrap());
+                }
+
+                if let Some(idx) = var_expr.find(":-") {
+                    let var_name = &var_expr[..idx];
+                    let default_val = &var_expr[idx + 2..];
+                    let val = loaded_env.get(var_name)
+                        .cloned()
+                        .or_else(|| std::env::var(var_name).ok())
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| default_val.to_string());
+                    result.push_str(&val);
+                } else {
+                    let val = loaded_env.get(&var_expr)
+                        .cloned()
+                        .or_else(|| std::env::var(&var_expr).ok())
+                        .unwrap_or_default();
+                    result.push_str(&val);
+                }
+            } else {
+                let mut var_name = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        var_name.push(chars.next().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+                if var_name.is_empty() {
+                    result.push('$');
+                } else {
+                    let val = loaded_env.get(&var_name)
+                        .cloned()
+                        .or_else(|| std::env::var(&var_name).ok())
+                        .unwrap_or_default();
+                    result.push_str(&val);
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 pub fn compose_up(path: &str) -> Result<String, String> {
     let data_dir = get_data_dir();
     let f = File::open(path).map_err(|e| format!("Failed to read compose file: {}", e))?;
@@ -529,17 +589,21 @@ pub fn compose_up(path: &str) -> Result<String, String> {
             }
         };
 
-        let mut env = if let Some(ref e) = svc.environment {
-            e.0.clone()
+        let loaded_env = if let Some(ref env_file_val) = svc.env_file {
+            load_env_file(path, env_file_val)
         } else {
             HashMap::new()
         };
 
-        if let Some(ref env_file_val) = svc.env_file {
-            let loaded_env = load_env_file(path, env_file_val);
-            for (k, v) in loaded_env {
-                env.entry(k).or_insert(v);
+        let mut env = HashMap::new();
+        if let Some(ref e) = svc.environment {
+            for (k, v) in &e.0 {
+                let expanded_v = expand_env_vars(v, &loaded_env);
+                env.insert(k.clone(), expanded_v);
             }
+        }
+        for (k, v) in loaded_env {
+            env.entry(k).or_insert(v);
         }
 
         let mut volumes = Vec::new();

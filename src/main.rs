@@ -173,6 +173,8 @@ enum NetworkCommands {
         /// Network name
         name: String,
     },
+    /// Prune unused network interfaces and veth pairs
+    Prune,
 }
 
 #[derive(Subcommand)]
@@ -400,6 +402,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 zenobox::delete_bridge_network(&name)?;
                 println!("✓ Bridge network '{}' deleted.", name);
             }
+            NetworkCommands::Prune => {
+                let data_dir = zenobox::get_data_dir();
+                let count = zenobox::prune_networks(&data_dir)?;
+                println!("✓ Pruned {} orphaned network interface(s).", count);
+            }
         },
         Commands::Compose { command } => match command {
             ComposeCommands::Up { file, detach: _ } => {
@@ -425,6 +432,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Commands::Daemon { port, socket } => {
+            let data_dir = zenobox::get_data_dir();
+            if let Ok(count) = zenobox::prune_networks(&data_dir) {
+                if count > 0 {
+                    println!("🧹 Pruned {} orphaned veth interface(s) on daemon startup.", count);
+                }
+            }
             zenobox::daemon::run_daemon(port, socket).await?;
         }
     }

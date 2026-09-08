@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::utils::{
     get_data_dir, run_cmd_status_silent, get_networks, save_networks, rootfs_dir, parse_port_rule,
-    NetworkConfig
+    lock_path, FileLock, NetworkConfig
 };
 use crate::container::container_list_internal;
 
@@ -322,6 +322,9 @@ pub fn clean_container_network(container_id: &str, ip: &str, ports: &[String]) {
 }
 
 pub fn sync_hosts_entries(data_dir: &str) -> Result<(), String> {
+    let l_path = lock_path(data_dir, "hosts_sync");
+    let _guard = FileLock::acquire_exclusive(&l_path)?;
+
     let containers = container_list_internal(data_dir, false)?;
     
     let mut running_ips = HashMap::new();
@@ -368,6 +371,44 @@ pub fn sync_hosts_entries(data_dir: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn prune_networks(data_dir: &str) -> Result<usize, String> {
+    let containers = container_list_internal(data_dir, false)?;
+    let running_ids: std::collections::HashSet<String> = containers.iter()
+        .filter(|c| c.status == "running")
+        .map(|c| c.id.clone())
+        .collect();
+
+    let output = Command::new("ip").args(&["link", "show"]).output().map_err(|e| e.to_string())?;
+    let out_str = String::from_utf8_lossy(&output.stdout);
+
+    let mut pruned_count = 0;
+    for line in out_str.lines() {
+        if line.contains("veth-h-") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let iface_name = parts[1].trim_matches(':');
+                let is_orphan = !running_ids.iter().any(|id| {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    id.hash(&mut hasher);
+                    let hash_val = hasher.finish();
+                    let hash_str = format!("{:08x}", hash_val);
+                    let short_hash = if hash_str.len() > 8 { &hash_str[0..8] } else { &hash_str };
+                    iface_name.contains(short_hash)
+                });
+
+                if is_orphan {
+                    let _ = run_cmd_status_silent("ip", &["link", "delete", iface_name]);
+                    pruned_count += 1;
+                }
+            }
+        }
+    }
+
+    Ok(pruned_count)
 }
 
 pub fn list_networks() -> Vec<NetworkConfig> {

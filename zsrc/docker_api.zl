@@ -1,0 +1,78 @@
+# zsrc/docker_api.zl - Docker v1.41 Socket API Endpoints
+
+# 1. Docker API Ping
+http.get: '/_ping' {
+    http.text: 'OK' {
+        headers: { 'Builder-Version': 'zenobox/0.1.0' }
+    }
+}
+
+# 2. Docker Version Information
+http.get: '/v1.41/version' {
+    http.json: {
+        Platform: { Name: 'Zenobox Container Engine' }
+        Version: '0.1.0'
+        ApiVersion: '1.41'
+        MinAPIVersion: '1.24'
+        GitCommit: 'zenobox-0.1.0'
+        GoVersion: 'rustc-2024'
+        Os: 'linux'
+        Arch: 'amd64'
+    }
+}
+
+# 3. Docker Container Listing
+http.get: '/v1.41/containers/json' {
+    let show_all = $query.all == 'true' || $query.all == '1'
+    box.list_containers: {
+        all: show_all
+        as: $containers
+    }
+    http.json: $containers
+}
+
+# 4. Docker Create Container
+http.post: '/v1.41/containers/create' {
+    http.json_body: { as: $body }
+    let name = $query.name
+
+    box.create_container: {
+        name: name
+        image: $body.Image
+        cmd: $body.Cmd
+        env: $body.Env
+        as: $res
+    }
+
+    http.created: {
+        Id: $res.id
+        Warnings: []
+    }
+}
+
+# 5. Docker Start Container
+http.post: '/v1.41/containers/:id/start' {
+    box.start_container: {
+        id: $params.id
+        as: $res
+    }
+    http.no_content
+}
+
+# 6. Docker Stop Container
+http.post: '/v1.41/containers/:id/stop' {
+    box.stop_container: {
+        id: $params.id
+        as: $res
+    }
+    http.no_content
+}
+
+# 7. Docker Delete Container
+http.delete: '/v1.41/containers/:id' {
+    box.delete_container: {
+        id: $params.id
+        as: $res
+    }
+    http.no_content
+}
