@@ -1,19 +1,26 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, Query,
+    },
     http::{header::HeaderName, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
+use futures_util::{SinkExt, StreamExt};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::io::{Read, Write};
 
 use crate::container::{
-    container_create, container_delete, container_exec, container_list_internal, container_logs, container_start, container_stop,
+    container_create, container_delete, container_exec, container_list_internal, container_logs,
+    container_start, container_stop, read_container_stats,
 };
 use crate::image::{list_images, pull_image};
-use crate::utils::get_data_dir;
+use crate::utils::{get_data_dir, get_runc_bin};
 
 #[derive(Deserialize)]
 pub struct ContainerListQuery {
@@ -74,8 +81,11 @@ pub fn docker_router() -> Router {
         .route("/containers/{id}/stop", post(stop_container_docker))
         .route("/containers/{id}", delete(delete_container_docker))
         .route("/containers/{id}/logs", get(get_container_logs_docker))
+        .route("/containers/{id}/stats", get(get_container_stats_docker))
+        .route("/containers/{id}/attach/ws", get(attach_ws_docker))
         .route("/containers/{id}/exec", post(create_exec_docker))
         .route("/exec/{id}/start", post(start_exec_docker))
+        .route("/exec/{id}/ws", get(exec_ws_docker))
         .route("/exec/{id}/json", get(inspect_exec_docker))
         .route("/images/json", get(list_images_docker))
         .route("/images/create", post(pull_image_docker));
@@ -91,8 +101,11 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/containers/{{id}}/stop", v), post(stop_container_docker))
             .route(&format!("/{}/containers/{{id}}", v), delete(delete_container_docker))
             .route(&format!("/{}/containers/{{id}}/logs", v), get(get_container_logs_docker))
+            .route(&format!("/{}/containers/{{id}}/stats", v), get(get_container_stats_docker))
+            .route(&format!("/{}/containers/{{id}}/attach/ws", v), get(attach_ws_docker))
             .route(&format!("/{}/containers/{{id}}/exec", v), post(create_exec_docker))
             .route(&format!("/{}/exec/{{id}}/start", v), post(start_exec_docker))
+            .route(&format!("/{}/exec/{{id}}/ws", v), get(exec_ws_docker))
             .route(&format!("/{}/exec/{{id}}/json", v), get(inspect_exec_docker))
             .route(&format!("/{}/images/json", v), get(list_images_docker))
             .route(&format!("/{}/images/create", v), post(pull_image_docker));
@@ -379,3 +392,189 @@ async fn inspect_exec_docker(Path(_exec_id): Path<String>) -> Json<serde_json::V
         "ContainerID": _exec_id.split(':').next().unwrap_or(&_exec_id)
     }))
 }
+
+#[derive(Deserialize)]
+pub struct StatsQuery {
+    pub stream: Option<bool>,
+}
+
+async fn get_container_stats_docker(
+    Path(id): Path<String>,
+    Query(q): Query<StatsQuery>,
+) -> Response {
+    let should_stream = q.stream.unwrap_or(true);
+    if !should_stream {
+        match read_container_stats(&id) {
+            Ok(stats) => Json(stats).into_response(),
+            Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "message": e }))).into_response(),
+        }
+    } else {
+        let stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+            std::time::Duration::from_secs(1),
+        ))
+        .map(move |_| {
+            match read_container_stats(&id) {
+                Ok(stats) => Ok::<_, std::convert::Infallible>(format!("{}\n", stats.to_string())),
+                Err(e) => Ok::<_, std::convert::Infallible>(format!("{{\"error\":\"{}\"}}\n", e)),
+            }
+        });
+        Response::builder()
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from_stream(stream))
+            .unwrap()
+    }
+}
+
+async fn attach_ws_docker(ws: WebSocketUpgrade, Path(id): Path<String>) -> Response {
+    ws.on_upgrade(move |socket| handle_pty_session(socket, id, vec!["/bin/sh".to_string()]))
+}
+
+async fn exec_ws_docker(ws: WebSocketUpgrade, Path(exec_id): Path<String>) -> Response {
+    let parts: Vec<&str> = exec_id.splitn(2, ':').collect();
+    let (container_id, cmd_str) = if parts.len() == 2 {
+        let decoded = hex::decode(parts[1]).unwrap_or_default();
+        let cmd = String::from_utf8(decoded).unwrap_or_else(|_| "/bin/sh".to_string());
+        (parts[0].to_string(), cmd)
+    } else {
+        (exec_id.clone(), "/bin/sh".to_string())
+    };
+
+    let cmd_parts: Vec<String> = cmd_str
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    let cmd_vec = if cmd_parts.is_empty() {
+        vec!["/bin/sh".to_string()]
+    } else {
+        cmd_parts
+    };
+
+    ws.on_upgrade(move |socket| handle_pty_session(socket, container_id, cmd_vec))
+}
+
+pub async fn handle_pty_session(socket: WebSocket, container_id: String, cmd: Vec<String>) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = ws_sender
+                .send(Message::Text(format!("Failed to open PTY: {}\r\n", e).into()))
+                .await;
+            return;
+        }
+    };
+
+    let runc_bin = get_runc_bin();
+    let mut cmd_builder = CommandBuilder::new(runc_bin);
+    cmd_builder.arg("exec");
+    cmd_builder.arg("-t");
+    cmd_builder.arg(&container_id);
+    for c in &cmd {
+        cmd_builder.arg(c);
+    }
+
+    let mut child = match pair.slave.spawn_command(cmd_builder) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = ws_sender
+                .send(Message::Text(format!("Failed to exec process: {}\r\n", e).into()))
+                .await;
+            return;
+        }
+    };
+
+    drop(pair.slave);
+
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = ws_sender
+                .send(Message::Text(format!("Failed to clone master reader: {}\r\n", e).into()))
+                .await;
+            return;
+        }
+    };
+
+    let mut writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = ws_sender
+                .send(Message::Text(format!("Failed to take master writer: {}\r\n", e).into()))
+                .await;
+            return;
+        }
+    };
+
+    let (tx_out, mut rx_out) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx_out.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let master_pty = pair.master;
+
+    let send_task = tokio::spawn(async move {
+        while let Some(bytes) = rx_out.recv().await {
+            if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = ws_receiver.next().await {
+            match msg {
+                Message::Text(txt) => {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        if let (Some(rows), Some(cols)) = (
+                            val.get("rows").and_then(|r| r.as_u64()),
+                            val.get("cols").and_then(|c| c.as_u64()),
+                        ) {
+                            let _ = master_pty.resize(PtySize {
+                                rows: rows as u16,
+                                cols: cols as u16,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                            continue;
+                        }
+                    }
+                    let _ = writer.write_all(txt.as_bytes());
+                    let _ = writer.flush();
+                }
+                Message::Binary(bin) => {
+                    let _ = writer.write_all(&bin);
+                    let _ = writer.flush();
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    let _ = tokio::select! {
+        _ = send_task => {},
+        _ = recv_task => {},
+    };
+
+    let _ = child.kill();
+}
+

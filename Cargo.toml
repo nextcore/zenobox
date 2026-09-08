@@ -17,8 +17,9 @@ path = "src/lib.rs"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7"
-axum = { version = "0.8", features = ["macros", "multipart"] }
+axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+portable-pty = "0.8"
 tower = { version = "0.5", features = ["util"] }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }

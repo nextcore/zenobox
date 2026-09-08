@@ -51,3 +51,23 @@ http.get: '/api/v1/networks' {
         data: $networks
     }
 }
+
+# 5. Native Container Stats
+http.get: '/api/v1/containers/:id/stats' {
+    box.get_container_stats: {
+        id: $params.id
+        as: $stats
+    }
+    http.json: {
+        success: true
+        data: $stats
+    }
+}
+
+# 6. Native Terminal WebSocket
+http.get: '/api/v1/containers/:id/terminal' {
+    box.attach_terminal_ws: {
+        id: $params.id
+    }
+}
+

@@ -42,6 +42,8 @@ pub fn native_router() -> Router {
         .route("/api/v1/containers/{id}/stop", post(native_stop_container))
         .route("/api/v1/containers/{id}", delete(native_delete_container))
         .route("/api/v1/containers/{id}/logs", get(native_get_logs))
+        .route("/api/v1/containers/{id}/stats", get(native_get_stats))
+        .route("/api/v1/containers/{id}/terminal", get(native_terminal_ws))
         .route("/api/v1/compose/up", post(native_compose_up))
         .route("/api/v1/compose/down", post(native_compose_down))
         .route("/api/v1/images", get(native_list_images))
@@ -160,3 +162,20 @@ async fn native_list_networks() -> Json<serde_json::Value> {
     let networks = list_networks();
     Json(json!({ "networks": networks }))
 }
+
+async fn native_get_stats(Path(id): Path<String>) -> Response {
+    match crate::container::read_container_stats(&id) {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+async fn native_terminal_ws(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    Path(id): Path<String>,
+) -> Response {
+    ws.on_upgrade(move |socket| {
+        crate::daemon::docker_api::handle_pty_session(socket, id, vec!["/bin/sh".to_string()])
+    })
+}
+

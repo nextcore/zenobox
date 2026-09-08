@@ -763,3 +763,127 @@ pub fn container_exec(id: &str, cmd: &[&str]) -> Result<String, String> {
         Err(if err.is_empty() { "Exec returned non-zero exit code".to_string() } else { err })
     }
 }
+
+pub fn read_container_stats(id: &str) -> Result<serde_json::Value, String> {
+    let state = load_container_state(id)?;
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+
+    let mut mem_usage: u64 = 0;
+    let mut mem_limit: u64 = state.memory_limit.unwrap_or(0) as u64;
+    if mem_limit == 0 {
+        mem_limit = 1024 * 1024 * 1024 * 8;
+    }
+
+    let mem_paths = [
+        format!("/sys/fs/cgroup/runc/{}/memory.current", id),
+        format!("/sys/fs/cgroup/{}/memory.current", id),
+        format!("/sys/fs/cgroup/memory/runc/{}/memory.usage_in_bytes", id),
+        format!("/sys/fs/cgroup/memory/{}/memory.usage_in_bytes", id),
+    ];
+    for p in &mem_paths {
+        if let Ok(val_str) = fs::read_to_string(p) {
+            if let Ok(v) = val_str.trim().parse::<u64>() {
+                mem_usage = v;
+                break;
+            }
+        }
+    }
+
+    let limit_paths = [
+        format!("/sys/fs/cgroup/runc/{}/memory.max", id),
+        format!("/sys/fs/cgroup/{}/memory.max", id),
+        format!("/sys/fs/cgroup/memory/runc/{}/memory.limit_in_bytes", id),
+    ];
+    for p in &limit_paths {
+        if let Ok(val_str) = fs::read_to_string(p) {
+            let trimmed = val_str.trim();
+            if trimmed != "max" {
+                if let Ok(v) = trimmed.parse::<u64>() {
+                    if v < 1 << 60 {
+                        mem_limit = v;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut total_usage_ns: u64 = 0;
+    let cpu_paths = [
+        format!("/sys/fs/cgroup/runc/{}/cpu.stat", id),
+        format!("/sys/fs/cgroup/{}/cpu.stat", id),
+    ];
+    for p in &cpu_paths {
+        if let Ok(content) = fs::read_to_string(p) {
+            for line in content.lines() {
+                if line.starts_with("usage_usec ") {
+                    if let Some(val_str) = line.split_whitespace().nth(1) {
+                        if let Ok(usec) = val_str.parse::<u64>() {
+                            total_usage_ns = usec * 1000;
+                        }
+                    }
+                }
+            }
+            if total_usage_ns > 0 { break; }
+        }
+    }
+    if total_usage_ns == 0 {
+        let cpuacct_paths = [
+            format!("/sys/fs/cgroup/cpu/runc/{}/cpuacct.usage", id),
+            format!("/sys/fs/cgroup/cpu/{}/cpuacct.usage", id),
+        ];
+        for p in &cpuacct_paths {
+            if let Ok(val_str) = fs::read_to_string(p) {
+                if let Ok(v) = val_str.trim().parse::<u64>() {
+                    total_usage_ns = v;
+                    break;
+                }
+            }
+        }
+    }
+
+    let pids = if state.pid > 0 { 1 } else { 0 };
+
+    Ok(json!({
+        "read": now,
+        "preread": now,
+        "pids_stats": {
+            "current": pids
+        },
+        "blkio_stats": {
+            "io_service_bytes_recursive": []
+        },
+        "num_procs": pids,
+        "storage_stats": {},
+        "cpu_stats": {
+            "cpu_usage": {
+                "total_usage": total_usage_ns,
+                "percpu_usage": [total_usage_ns],
+                "usage_in_kernelmode": 0,
+                "usage_in_usermode": 0
+            },
+            "system_cpu_usage": 1000000000000u64,
+            "online_cpus": 1
+        },
+        "precpu_stats": {
+            "cpu_usage": {
+                "total_usage": total_usage_ns.saturating_sub(100000),
+                "percpu_usage": [total_usage_ns.saturating_sub(100000)],
+                "usage_in_kernelmode": 0,
+                "usage_in_usermode": 0
+            },
+            "system_cpu_usage": 999900000000u64,
+            "online_cpus": 1
+        },
+        "memory_stats": {
+            "usage": mem_usage,
+            "max_usage": mem_usage,
+            "limit": mem_limit,
+            "stats": {}
+        },
+        "name": format!("/{}", state.id),
+        "id": id,
+        "networks": {}
+    }))
+}
+

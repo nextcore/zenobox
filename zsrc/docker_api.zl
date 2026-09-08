@@ -76,3 +76,20 @@ http.delete: '/v1.41/containers/:id' {
     }
     http.no_content
 }
+
+# 8. Docker Container Stats
+http.get: '/v1.41/containers/:id/stats' {
+    box.get_container_stats: {
+        id: $params.id
+        as: $stats
+    }
+    http.json: $stats
+}
+
+# 9. Docker WebSocket Attach Terminal
+http.get: '/v1.41/containers/:id/attach/ws' {
+    box.attach_terminal_ws: {
+        id: $params.id
+    }
+}
+
