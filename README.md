@@ -111,6 +111,21 @@ sudo ln -sf /usr/local/bin/zenobox /usr/local/bin/docker-compose
 | **Bridge Networking & Ports** | ✅ `docker0` | ✅ `zenobr0` (`veth` + `iptables` NAT) |
 | **Interactive PTY & Live Stats** | ✅ Supported | ✅ **Supported (WebSocket + Cgroups)** |
 | **Docker API Compatibility** | ✅ Native | ✅ **v1.40 - v1.47 Full Support** |
+| **Image Building (`docker build`)** | ✅ Built-in BuildKit | ❌ **Not Supported** (Pull pre-built images from registry) |
+| **Multi-Host Clustering (`docker swarm`)** | ✅ Supported | ❌ **Not Supported** (Single-Node VPS focus) |
+
+---
+
+## ⚠️ Scope & Intentional Omissions
+
+Zenobox is engineered specifically as a **lightweight single-node OCI container runtime**. To maintain its minimal footprint (~15MB RAM) and zero-daemon simplicity, the following components are intentionally omitted:
+
+1. **❌ Image Building (`docker build` / `buildkit`)**
+   - **Why**: Image building requires complex layer overlay caching and compiler tooling that bloats runtime binaries.
+   - **Workflow**: Pull pre-compiled OCI images directly from registries (Docker Hub, GHCR, Quay) or use CI/CD pipelines (GitHub Actions, GitLab CI) to build images.
+2. **❌ Multi-Host Clustering (`docker swarm`)**
+   - **Why**: Zenobox targets single-node Linux servers, VPS instances, edge devices, and panel backends.
+   - **Workflow**: For single-host multi-container stacks, use `zenobox compose` or native REST API.
 
 ---
 
