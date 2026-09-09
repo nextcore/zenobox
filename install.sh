@@ -280,7 +280,8 @@ Alias=docker.service"
 
     echo "$SERVICE_CONTENT" | $SUDO_CMD tee "$SERVICE_FILE" >/dev/null
     $SUDO_CMD systemctl daemon-reload 2>/dev/null
-    $SUDO_CMD systemctl enable --now docker 2>/dev/null || $SUDO_CMD systemctl restart docker 2>/dev/null
+    $SUDO_CMD systemctl enable docker 2>/dev/null
+    $SUDO_CMD systemctl restart docker 2>/dev/null || $SUDO_CMD systemctl start docker 2>/dev/null
     log_success "Systemd 'docker.service' registered and activated on port 2375."
 
 elif command -v rc-service >/dev/null 2>&1 || [ -d /etc/init.d ]; then
