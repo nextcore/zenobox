@@ -74,6 +74,7 @@ pub struct ExecStartPayload {
 pub fn docker_router() -> Router {
     let mut router = Router::new()
         .route("/_ping", get(ping))
+        .route("/version", get(docker_version))
         .route("/info", get(docker_info))
         .route("/containers/json", get(list_containers_docker))
         .route("/containers/create", post(create_container_docker))
@@ -94,6 +95,7 @@ pub fn docker_router() -> Router {
     for v in versions {
         router = router
             .route(&format!("/{}/_ping", v), get(ping))
+            .route(&format!("/{}/version", v), get(docker_version))
             .route(&format!("/{}/info", v), get(docker_info))
             .route(&format!("/{}/containers/json", v), get(list_containers_docker))
             .route(&format!("/{}/containers/create", v), post(create_container_docker))
@@ -120,6 +122,40 @@ async fn ping() -> Response {
     headers.insert(HeaderName::from_static("docker-experimental"), "false".parse().unwrap());
     headers.insert(HeaderName::from_static("builder-version"), "zenobox/0.1.0".parse().unwrap());
     (StatusCode::OK, headers, "OK").into_response()
+}
+
+async fn docker_version() -> Json<serde_json::Value> {
+    Json(json!({
+        "Platform": {
+            "Name": "Zenobox Engine"
+        },
+        "Components": [
+            {
+                "Name": "Engine",
+                "Version": "24.0.7",
+                "Details": {
+                    "ApiVersion": "1.41",
+                    "Arch": "amd64",
+                    "BuildTime": "2026-09-09T00:00:00.000000000+00:00",
+                    "Experimental": "false",
+                    "GitCommit": "zenobox",
+                    "GoVersion": "rustc-1.85",
+                    "KernelVersion": "6.8.0",
+                    "MinAPIVersion": "1.24",
+                    "Os": "linux"
+                }
+            }
+        ],
+        "Version": "24.0.7",
+        "ApiVersion": "1.41",
+        "MinAPIVersion": "1.24",
+        "GitCommit": "zenobox",
+        "GoVersion": "rustc-1.85",
+        "Os": "linux",
+        "Arch": "amd64",
+        "KernelVersion": "6.8.0",
+        "BuildTime": "2026-09-09T00:00:00.000000000+00:00"
+    }))
 }
 
 async fn docker_info() -> Json<serde_json::Value> {
