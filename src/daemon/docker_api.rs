@@ -510,19 +510,19 @@ async fn disconnect_network_docker(Path(_id): Path<String>) -> Response {
 async fn inspect_volume_docker(Path(name): Path<String>) -> Json<serde_json::Value> {
     let volumes = crate::volume::list_volumes();
     if let Some(v) = volumes.into_iter().find(|vol| vol.name == name) {
-        json!({
+        Json(json!({
             "Name": v.name,
             "Driver": v.driver,
             "Mountpoint": v.mountpoint,
             "CreatedAt": "2026-09-09T00:00:00Z"
-        })
+        }))
     } else {
-        json!({
+        Json(json!({
             "Name": name,
             "Driver": "local",
             "Mountpoint": format!("/var/lib/zenobox/volumes/{}", name),
             "CreatedAt": "2026-09-09T00:00:00Z"
-        })
+        }))
     }
 }
 
