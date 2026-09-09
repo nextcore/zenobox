@@ -95,8 +95,37 @@ enum Commands {
     },
     /// Fetch the logs of a container
     Logs {
+        /// Follow log output (-f/--follow)
+        #[arg(short = 'f', long = "follow")]
+        follow: bool,
+
+        /// Number of lines to show from the end of the logs
+        #[arg(short = 'n', long = "tail")]
+        tail: Option<String>,
+
+        /// Show timestamps
+        #[arg(short = 't', long = "timestamps")]
+        timestamps: bool,
+
         /// Container ID or name
         container: String,
+    },
+    /// Run a command in a running container
+    Exec {
+        /// Keep STDIN open even if not attached
+        #[arg(short = 'i', long = "interactive")]
+        interactive: bool,
+
+        /// Allocate a pseudo-TTY
+        #[arg(short = 't', long = "tty")]
+        tty: bool,
+
+        /// Container ID or name
+        container: String,
+
+        /// Command to run inside container
+        #[arg(trailing_var_arg = true)]
+        command: Vec<String>,
     },
     /// Manage OCI images
     Image {
@@ -208,6 +237,18 @@ enum ComposeCommands {
         /// Detached mode: Run containers in the background
         #[arg(short = 'd', long = "detach")]
         detach: bool,
+
+        /// Build images before starting containers
+        #[arg(long = "build")]
+        build: bool,
+
+        /// Recreate containers even if their configuration and image haven't changed
+        #[arg(long = "force-recreate")]
+        force_recreate: bool,
+
+        /// Don't build an image, even if it's missing
+        #[arg(long = "no-build")]
+        no_build: bool,
     },
     /// Stop and remove containers, networks created by up
     Down {
@@ -218,6 +259,18 @@ enum ComposeCommands {
         /// Specify an alternate project name
         #[arg(short = 'p', long = "project-name")]
         project: Option<String>,
+
+        /// Remove containers for services not defined in the Compose file
+        #[arg(long = "remove-orphans")]
+        remove_orphans: bool,
+
+        /// Remove named volumes declared in the volumes section
+        #[arg(short = 'v', long = "volumes")]
+        volumes: bool,
+
+        /// Specify a shutdown timeout in seconds
+        #[arg(short = 't', long = "timeout")]
+        timeout: Option<i32>,
     },
     /// List containers in compose project
     Ps {
@@ -405,10 +458,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             zenobox::container_delete(&container)?;
             println!("✓ Container '{}' removed.", container);
         }
-        Commands::Logs { container } => {
+        Commands::Logs { follow: _, tail: _, timestamps: _, container } => {
             match zenobox::container_logs(&container) {
                 Ok(logs) => print!("{}", logs),
                 Err(e) => eprintln!("❌ Error fetching logs: {}", e),
+            }
+        }
+        Commands::Exec { interactive: _, tty: _, container, command } => {
+            let cmd_strings = if command.is_empty() { vec!["/bin/sh".to_string()] } else { command };
+            let cmd_refs: Vec<&str> = cmd_strings.iter().map(|s| s.as_str()).collect();
+            match zenobox::container_exec(&container, &cmd_refs) {
+                Ok(output) => print!("{}", output),
+                Err(e) => eprintln!("❌ Exec error: {}", e),
             }
         }
         Commands::Image { command } => match command {
@@ -491,13 +552,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 project: _,
                 env_file: _,
                 detach: _,
+                build: _,
+                force_recreate: _,
+                no_build: _,
             } => {
                 println!("🐳 [zenobox] Running Docker Compose Up from '{}'...", file);
                 let out = zenobox::compose_up(&file)?;
                 print!("{}", out);
                 println!("✓ Compose Up complete.");
             }
-            ComposeCommands::Down { file, project: _ } => {
+            ComposeCommands::Down {
+                file,
+                project: _,
+                remove_orphans: _,
+                volumes: _,
+                timeout: _,
+            } => {
                 println!("🛑 [zenobox] Running Docker Compose Down from '{}'...", file);
                 let out = zenobox::compose_down(&file)?;
                 print!("{}", out);

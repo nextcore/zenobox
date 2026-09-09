@@ -36,6 +36,8 @@ rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 zenocore = "0.2.3"
 zeno-std = "0.2.3"
 zenoengine = "0.2.4"

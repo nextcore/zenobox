@@ -226,37 +226,10 @@ pub fn get_data_dir() -> String {
     }
 
     let default_path = std::path::Path::new(DEFAULT_DATA_DIR);
-    let mut is_writable = false;
-    if default_path.exists() {
-        let test_file = default_path.join(format!(".test_write_{}", rand::random::<u32>()));
-        if std::fs::write(&test_file, "test").is_ok() {
-            is_writable = true;
-            let _ = std::fs::remove_file(test_file);
-        }
-    } else {
-        if std::fs::create_dir_all(default_path).is_ok() {
-            is_writable = true;
-        }
+    if !default_path.exists() {
+        let _ = std::fs::create_dir_all(default_path);
     }
-
-    if is_writable {
-        DEFAULT_DATA_DIR.to_string()
-    } else {
-        let fallback_path = if let Ok(home) = std::env::var("HOME") {
-            format!("{}/.zenobox/data", home)
-        } else {
-            "./data/zenobox".to_string()
-        };
-
-        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !LOGGED.load(std::sync::atomic::Ordering::Relaxed) {
-            eprintln!("⚠ [zenobox] Default directory {} is not writable. Falling back to local directory: {}", DEFAULT_DATA_DIR, fallback_path);
-            LOGGED.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-
-        let _ = std::fs::create_dir_all(&fallback_path);
-        fallback_path
-    }
+    DEFAULT_DATA_DIR.to_string()
 }
 
 pub fn container_dir(data_dir: &str, id: &str) -> PathBuf {

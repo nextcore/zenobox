@@ -2518,6 +2518,8 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "hyper",
+ "hyper-util",
  "libc",
  "portable-pty",
  "rand 0.8.8",

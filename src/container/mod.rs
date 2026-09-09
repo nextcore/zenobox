@@ -51,32 +51,30 @@ pub fn container_list_internal(data_dir: &str, auto_restart: bool) -> Result<Vec
             if entry.path().is_dir() {
                 let id = entry.file_name().to_string_lossy().to_string();
                 if let Ok(mut state) = load_container_state(&id) {
-                    if state.status != "stopped" && state.status != "oom_killed" {
-                        let output = runc_exec(&["state", &id]);
-                        if let Ok(out) = output {
-                            if runc_exec(&["state", &id]).is_ok() && out.status.success() {
-                                let out_str = String::from_utf8_lossy(&out.stdout);
-                                if let Ok(runc_st) = serde_json::from_str::<serde_json::Value>(&out_str) {
-                                    let mut runc_status = runc_st.get("status").and_then(|s| s.as_str()).unwrap_or("stopped").to_string();
-                                    let runc_pid = runc_st.get("pid").and_then(|p| p.as_i64()).unwrap_or(0) as i32;
+                    let output = runc_exec(&["state", &id]);
+                    if let Ok(out) = output {
+                        if out.status.success() {
+                            let out_str = String::from_utf8_lossy(&out.stdout);
+                            if let Ok(runc_st) = serde_json::from_str::<serde_json::Value>(&out_str) {
+                                let mut runc_status = runc_st.get("status").and_then(|s| s.as_str()).unwrap_or("stopped").to_string();
+                                let runc_pid = runc_st.get("pid").and_then(|p| p.as_i64()).unwrap_or(0) as i32;
 
-                                    if runc_status == "stopped" && check_oom_killed(&id) {
-                                        runc_status = "oom_killed".to_string();
-                                    }
-
-                                    if state.status != runc_status || state.pid != runc_pid {
-                                        state.status = runc_status;
-                                        state.pid = runc_pid;
-                                        let _ = save_container_state(&state);
-                                    }
+                                if runc_status == "stopped" && check_oom_killed(&id) {
+                                    runc_status = "oom_killed".to_string();
                                 }
-                            } else {
-                                if state.status == "running" || state.status == "created" {
-                                    let is_oom = check_oom_killed(&id);
-                                    state.status = if is_oom { "oom_killed".to_string() } else { "stopped".to_string() };
-                                    state.pid = 0;
+
+                                if state.status != runc_status || state.pid != runc_pid {
+                                    state.status = runc_status;
+                                    state.pid = runc_pid;
                                     let _ = save_container_state(&state);
                                 }
+                            }
+                        } else {
+                            if state.status == "running" || state.status == "created" {
+                                let is_oom = check_oom_killed(&id);
+                                state.status = if is_oom { "oom_killed".to_string() } else { "stopped".to_string() };
+                                state.pid = 0;
+                                let _ = save_container_state(&state);
                             }
                         }
                     }
@@ -533,8 +531,20 @@ pub fn container_create(
 pub fn container_start(id: &str) -> Result<(), String> {
     let data_dir = get_data_dir();
     let mut state = load_container_state(id)?;
-    if state.status == "running" {
-        return Err(format!("Container {} is already running", id));
+
+    if let Ok(out) = runc_exec(&["state", id]) {
+        if out.status.success() {
+            let out_str = String::from_utf8_lossy(&out.stdout);
+            if let Ok(runc_st) = serde_json::from_str::<serde_json::Value>(&out_str) {
+                if let Some(r_status) = runc_st.get("status").and_then(|s| s.as_str()) {
+                    if r_status == "running" {
+                        state.status = "running".to_string();
+                        let _ = save_container_state(&state);
+                        return Err(format!("Container {} is already running", id));
+                    }
+                }
+            }
+        }
     }
 
     mount_overlayfs(&state.image, &data_dir, id)?;

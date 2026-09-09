@@ -4,9 +4,37 @@ pub mod zl_engine;
 pub mod slots;
 
 use axum::Router;
+use axum::middleware::{self, Next};
+use axum::extract::Request;
+use axum::response::Response;
 use std::os::unix::fs::PermissionsExt;
 use tower_http::cors::{Any, CorsLayer};
 use zl_engine::ZlScriptLoader;
+
+async fn log_requests(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let headers = req.headers().clone();
+    
+    // Log exec and terminal-related requests with all headers
+    let path = uri.path();
+    if path.contains("/exec") || path.contains("/attach") || path.contains("/start") {
+        let upgrade_hdr = headers.get("upgrade")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("none");
+        let conn_hdr = headers.get("connection")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("none");
+        eprintln!("[zenobox] {} {} | Upgrade: {} | Connection: {}", 
+            method, uri, upgrade_hdr, conn_hdr);
+    } else {
+        eprintln!("[zenobox] {} {}", method, uri);
+    }
+    
+    let resp = next.run(req).await;
+    eprintln!("[zenobox] -> {} {}", resp.status(), uri.path());
+    resp
+}
 
 pub async fn run_daemon(port: u16, socket_path: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let cors = CorsLayer::new()
@@ -17,6 +45,7 @@ pub async fn run_daemon(port: u16, socket_path: Option<String>) -> Result<(), Bo
     let app = Router::new()
         .merge(docker_api::docker_router())
         .merge(native_api::native_router())
+        .layer(middleware::from_fn(log_requests))
         .layer(cors);
 
     let mode_str = if ZlScriptLoader::is_dev_mode() {

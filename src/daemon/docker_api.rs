@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query, Request,
+        FromRequest, Path, Query, Request,
     },
     http::{header::HeaderName, HeaderMap, StatusCode},
     middleware::{self, Next},
@@ -15,12 +15,13 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::container::{
     container_create, container_delete, container_exec, container_list_internal, container_logs,
     container_start, container_stop, read_container_stats,
 };
-use crate::image::{list_images, pull_image};
+use crate::image::{list_images, list_images_info, pull_image};
 use crate::utils::{get_data_dir, get_runc_bin};
 
 fn deserialize_bool_from_anything<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -141,11 +142,14 @@ pub fn docker_router() -> Router {
         .route("/containers/{id}", delete(delete_container_docker))
         .route("/containers/{id}/logs", get(get_container_logs_docker))
         .route("/containers/{id}/stats", get(get_container_stats_docker))
+        .route("/containers/{id}/attach", post(start_attach_docker).get(start_attach_docker))
         .route("/containers/{id}/attach/ws", get(attach_ws_docker))
         .route("/containers/{id}/exec", post(create_exec_docker))
-        .route("/exec/{id}/start", post(start_exec_docker))
+        .route("/exec/{id}/start", post(start_exec_docker).get(start_exec_docker))
         .route("/exec/{id}/ws", get(exec_ws_docker))
         .route("/exec/{id}/json", get(inspect_exec_docker))
+        .route("/exec/{id}/resize", post(exec_resize_docker))
+        .route("/containers/{id}/resize", post(exec_resize_docker))
         .route("/images/json", get(list_images_docker))
         .route("/images/create", post(pull_image_docker))
         .route("/images/prune", post(images_prune_docker))
@@ -185,7 +189,7 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/containers/{{id}}/stats", v), get(get_container_stats_docker))
             .route(&format!("/{}/containers/{{id}}/attach/ws", v), get(attach_ws_docker))
             .route(&format!("/{}/containers/{{id}}/exec", v), post(create_exec_docker))
-            .route(&format!("/{}/exec/{{id}}/start", v), post(start_exec_docker))
+            .route(&format!("/{}/exec/{{id}}/start", v), post(start_exec_docker).get(start_exec_docker))
             .route(&format!("/{}/exec/{{id}}/ws", v), get(exec_ws_docker))
             .route(&format!("/{}/exec/{{id}}/json", v), get(inspect_exec_docker))
             .route(&format!("/{}/images/json", v), get(list_images_docker))
@@ -386,27 +390,109 @@ async fn inspect_container_docker(Path(id): Path<String>) -> Response {
     let containers = container_list_internal(&data_dir, true).unwrap_or_default();
     if let Some(c) = containers.into_iter().find(|item| item.id == id || item.id.starts_with(&id)) {
         let state_str = if c.status == "running" { "running" } else { "exited" };
+        let created = c.created_at.as_str();
+        let net_mode = c.network.clone().unwrap_or_else(|| "bridge".to_string());
+
+        // Build port bindings for HostConfig
+        let mut port_bindings_map = serde_json::Map::new();
+        let mut exposed_ports_map = serde_json::Map::new();
+        let mut ports_array = Vec::new();
+        if let Some(ref p_list) = c.ports {
+            for p in p_list {
+                // Format: host_ip:host_port:container_port or host_port:container_port
+                let parts: Vec<&str> = p.splitn(3, ':').collect();
+                let (host_ip, host_port, container_port) = match parts.len() {
+                    3 => (parts[0].to_string(), parts[1].to_string(), parts[2].to_string()),
+                    2 => ("0.0.0.0".to_string(), parts[0].to_string(), parts[1].to_string()),
+                    _ => continue,
+                };
+                let proto_key = format!("{}/tcp", container_port);
+                exposed_ports_map.insert(proto_key.clone(), json!({}));
+                port_bindings_map.insert(proto_key.clone(), json!([{
+                    "HostIp": host_ip,
+                    "HostPort": host_port
+                }]));
+                ports_array.push(json!({
+                    "IP": host_ip,
+                    "PrivatePort": container_port.parse::<u16>().unwrap_or(0),
+                    "PublicPort": host_port.parse::<u16>().unwrap_or(0),
+                    "Type": "tcp"
+                }));
+            }
+        }
+
+        // Build env list
+        let env_list: Vec<String> = c.env.as_ref().map(|env_map| {
+            env_map.iter().map(|(k, v)| format!("{}={}", k, v)).collect()
+        }).unwrap_or_default();
+
+        // Build mounts
+        let mut mounts_array = Vec::new();
+        if let Some(ref mounts) = c.mounts {
+            for m in mounts {
+                let parts: Vec<&str> = m.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    mounts_array.push(json!({
+                        "Type": "bind",
+                        "Source": parts[0],
+                        "Destination": parts[1],
+                        "Mode": "rw",
+                        "RW": true,
+                        "Propagation": "rprivate"
+                    }));
+                }
+            }
+        }
+
         (
             StatusCode::OK,
             Json(json!({
                 "Id": c.id,
-                "Created": "2026-09-09T00:00:00Z",
-                "Path": "zenobox",
-                "Args": [],
+                "Created": created,
+                "Path": c.cmd.first().cloned().unwrap_or_else(|| "sh".to_string()),
+                "Args": c.cmd.iter().skip(1).collect::<Vec<_>>(),
                 "State": {
                     "Status": state_str,
                     "Running": c.status == "running",
+                    "Paused": false,
+                    "Restarting": false,
+                    "OOMKilled": false,
+                    "Dead": false,
                     "Pid": c.pid,
-                    "ExitCode": 0
+                    "ExitCode": c.exit_code.unwrap_or(0),
+                    "Error": "",
+                    "StartedAt": created,
+                    "FinishedAt": c.exited_at.as_deref().unwrap_or("0001-01-01T00:00:00Z")
                 },
                 "Image": c.image,
                 "Name": format!("/{}", c.id),
+                "RestartCount": 0,
                 "HostConfig": {
-                    "NetworkMode": c.network
+                    "NetworkMode": net_mode,
+                    "PortBindings": port_bindings_map,
+                    "Binds": c.mounts.as_deref().unwrap_or(&[]).to_vec()
                 },
                 "Config": {
-                    "Image": c.image
-                }
+                    "Image": c.image,
+                    "Env": env_list,
+                    "Cmd": c.cmd,
+                    "ExposedPorts": exposed_ports_map,
+                    "Labels": {}
+                },
+                "Mounts": mounts_array,
+                "NetworkSettings": {
+                    "Ports": port_bindings_map,
+                    "Networks": {
+                        net_mode.clone(): {
+                            "IPAddress": "",
+                            "Gateway": "",
+                            "IPPrefixLen": 16,
+                            "MacAddress": "",
+                            "NetworkID": ""
+                        }
+                    }
+                },
+                "Ports": ports_array
             })),
         ).into_response()
     } else {
@@ -613,38 +699,71 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
         }
 
         let state_str = if c.status == "running" { "running" } else { "exited" };
-        let status_str = format!("Up ({})", c.status);
+        // Calculate uptime for human-readable status
+        let status_str = if c.status == "running" {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&c.created_at) {
+                let now = chrono::Utc::now();
+                let secs = (now - dt.with_timezone(&chrono::Utc)).num_seconds();
+                if secs < 60 {
+                    format!("Up {} seconds", secs)
+                } else if secs < 3600 {
+                    format!("Up {} minutes", secs / 60)
+                } else if secs < 86400 {
+                    format!("Up {} hours", secs / 3600)
+                } else {
+                    format!("Up {} days", secs / 86400)
+                }
+            } else {
+                "Up".to_string()
+            }
+        } else {
+            format!("Exited (0) {} ago", "seconds")
+        };
+
+        // Created timestamp
+        let created_ts = chrono::DateTime::parse_from_rfc3339(&c.created_at)
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0);
 
         let mut ports_json = Vec::new();
         if let Some(ref p_list) = c.ports {
             for p in p_list {
-                let parts: Vec<&str> = p.split(':').collect();
-                if parts.len() == 2 {
-                    ports_json.push(json!({
-                        "PublicPort": parts[0].parse::<u16>().unwrap_or(0),
-                        "PrivatePort": parts[1].parse::<u16>().unwrap_or(0),
-                        "Type": "tcp"
-                    }));
-                }
+                let parts: Vec<&str> = p.splitn(3, ':').collect();
+                let (host_ip, host_port, container_port) = match parts.len() {
+                    3 => (parts[0].to_string(), parts[1].to_string(), parts[2].to_string()),
+                    2 => ("0.0.0.0".to_string(), parts[0].to_string(), parts[1].to_string()),
+                    _ => continue,
+                };
+                ports_json.push(json!({
+                    "IP": host_ip,
+                    "PublicPort": host_port.parse::<u16>().unwrap_or(0),
+                    "PrivatePort": container_port.parse::<u16>().unwrap_or(0),
+                    "Type": "tcp"
+                }));
             }
         }
 
+        let net_mode = c.network.clone().unwrap_or_else(|| "bridge".to_string());
         result.push(json!({
             "Id": c.id,
             "Names": [format!("/{}", c.id)],
             "Image": c.image,
             "ImageID": format!("sha256:{}", hex::encode(c.image.as_bytes())),
-            "Command": "zenobox",
-            "Created": 1600000000,
+            "Command": c.cmd.first().cloned().unwrap_or_else(|| "sh".to_string()),
+            "Created": created_ts,
             "State": state_str,
             "Status": status_str,
             "Ports": ports_json,
             "Labels": {},
             "HostConfig": {
-                "NetworkMode": c.network.clone().unwrap_or_else(|| "bridge".to_string())
+                "NetworkMode": net_mode.clone()
             },
             "NetworkSettings": {
-                "Networks": {}
+                "Networks": {
+                    net_mode.clone(): {
+                        "IPAddress": ""
+                    }
+                }
             }
         }));
     }
@@ -774,14 +893,15 @@ async fn get_container_logs_docker(Path(id): Path<String>) -> Response {
 }
 
 async fn list_images_docker() -> Json<serde_json::Value> {
-    let images = list_images().unwrap_or_default();
+    let images = list_images_info().unwrap_or_default();
     let mut result = Vec::new();
     for img in images {
         result.push(json!({
-            "Id": format!("sha256:{}", hex::encode(img.as_bytes())),
-            "RepoTags": [img],
-            "Created": 1600000000,
-            "Size": 15000000u64
+            "Id": format!("sha256:{}", hex::encode(img.tag.as_bytes())),
+            "RepoTags": [img.tag],
+            "Created": img.created,
+            "Size": img.size,
+            "VirtualSize": img.size
         }));
     }
     Json(json!(result))
@@ -800,12 +920,21 @@ async fn pull_image_docker(Query(params): Query<HashMap<String, String>>) -> Res
     };
 
     match pull_image(&full_ref).await {
-        Ok(_) => (StatusCode::OK, Json(json!({ "status": "Download complete" }))).into_response(),
+        Ok(_) => {
+            let body = format!("{}\n{}\n",
+                json!({ "status": format!("Pulling from {}", full_ref) }),
+                json!({ "status": "Status: Image is up to date", "progressDetail": {} })
+            );
+            (
+                StatusCode::OK,
+                [("Content-Type", "application/json")],
+                body,
+            ).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "message": e })),
-        )
-            .into_response(),
+        ).into_response(),
     }
 }
 
@@ -828,28 +957,233 @@ async fn create_exec_docker(
 
 async fn start_exec_docker(
     Path(exec_id): Path<String>,
-    _json: Option<Json<ExecStartPayload>>,
+    req: Request,
 ) -> Response {
+    let upgrade_hdr = req
+        .headers()
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_lowercase())
+        .unwrap_or_default();
+
+    let is_websocket = upgrade_hdr == "websocket";
+    let connection_hdr = req
+        .headers()
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_lowercase())
+        .unwrap_or_default();
+    let is_tcp_hijack = upgrade_hdr == "tcp" || connection_hdr.contains("upgrade");
+
+    // Decode exec_id to get container and command
     let parts: Vec<&str> = exec_id.splitn(2, ':').collect();
     let (container_id, cmd_str) = if parts.len() == 2 {
         let decoded = hex::decode(parts[1]).unwrap_or_default();
         let cmd = String::from_utf8(decoded).unwrap_or_else(|_| "/bin/sh".to_string());
-        (parts[0], cmd)
+        (parts[0].to_string(), cmd)
     } else {
-        (exec_id.as_str(), "/bin/sh".to_string())
+        (exec_id.clone(), "/bin/sh".to_string())
+    };
+    let cmd_parts: Vec<String> = cmd_str
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    let cmd_vec: Vec<String> = if cmd_parts.is_empty() {
+        vec!["/bin/sh".to_string()]
+    } else {
+        cmd_parts
     };
 
-    let cmd_parts: Vec<&str> = cmd_str.split_whitespace().collect();
-    let cmd_slice = if cmd_parts.is_empty() { vec!["/bin/sh"] } else { cmd_parts };
+    if is_tcp_hijack {
+        // req is consumed here in the tcp hijack path
+        return handle_tcp_hijack_exec(req, container_id, cmd_vec).await;
+    }
 
-    match container_exec(container_id, &cmd_slice) {
-        Ok(out) => (StatusCode::OK, out).into_response(),
+    if is_websocket {
+        // req is consumed here in the websocket path
+        if let Ok(ws) = WebSocketUpgrade::from_request(req, &()).await {
+            return ws.on_upgrade(move |socket| handle_pty_session(socket, container_id, cmd_vec));
+        }
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Non-interactive exec: run and return output
+    // req is not used after this point
+    drop(req);
+    let cmd_refs: Vec<&str> = cmd_vec.iter().map(|s: &String| s.as_str()).collect();
+    match container_exec(&container_id, &cmd_refs) {
+        Ok(out) => {
+            // Return as Docker multiplexed stream format
+            let bytes = out.as_bytes();
+            let mut body = Vec::with_capacity(8 + bytes.len());
+            // stream type 1 = stdout
+            body.push(1u8);
+            body.extend_from_slice(&[0u8; 3]);
+            let len = (bytes.len() as u32).to_be_bytes();
+            body.extend_from_slice(&len);
+            body.extend_from_slice(bytes);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/vnd.docker.raw-stream")
+                .body(axum::body::Body::from(body))
+                .unwrap()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "message": e })),
-        )
-            .into_response(),
+        ).into_response(),
     }
+}
+
+async fn handle_tcp_hijack_exec(mut req: Request, container_id: String, cmd: Vec<String>) -> Response {
+    // Extract the OnUpgrade future from request extensions BEFORE consuming req
+    // hyper puts the OnUpgrade future in req.extensions() when the connection supports upgrades
+    let on_upgrade = req.extensions_mut().remove::<hyper::upgrade::OnUpgrade>();
+
+    let on_upgrade = match on_upgrade {
+        Some(u) => u,
+        None => {
+            eprintln!("[zenobox] TCP hijack: no OnUpgrade extension found (connection may not support upgrades)");
+            // Axum's serve may not propagate OnUpgrade for all connection types.
+            // Fall back to trying hyper::upgrade::on with the request.
+            // We need to consume req here.
+            let upgraded_fut = hyper::upgrade::on(req);
+            tokio::spawn(run_pty_bridge(upgraded_fut, container_id, cmd));
+            return Response::builder()
+                .status(StatusCode::SWITCHING_PROTOCOLS)
+                .header("Content-Type", "application/vnd.docker.raw-stream")
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "tcp")
+                .body(axum::body::Body::empty())
+                .unwrap();
+        }
+    };
+
+    // Drop req to avoid keeping any references
+    drop(req);
+
+    // Spawn background task: wait for upgrade to complete, then run PTY bridge
+    tokio::spawn(run_pty_bridge(on_upgrade, container_id, cmd));
+
+    // Return 101 immediately - upgrade future resolves after this response is sent
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("Content-Type", "application/vnd.docker.raw-stream")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "tcp")
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+async fn run_pty_bridge(
+    on_upgrade: hyper::upgrade::OnUpgrade,
+    container_id: String,
+    cmd: Vec<String>,
+) {
+    // Wait for the TCP connection to be upgraded (resolves after 101 is sent)
+    let upgraded = match on_upgrade.await {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("[zenobox] TCP hijack upgrade error: {}", e);
+            return;
+        }
+    };
+
+        let io = tokio::io::BufStream::new(hyper_util::rt::TokioIo::new(upgraded));
+        let (mut tcp_reader, mut tcp_writer) = tokio::io::split(io);
+
+        let pty_system = native_pty_system();
+        let pair = match pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tcp_writer.write_all(format!("PTY error: {}\r\n", e).as_bytes()).await;
+                return;
+            }
+        };
+
+        let runc_bin = get_runc_bin();
+        let root_path = format!("{}/runc", get_data_dir());
+        let mut cmd_builder = CommandBuilder::new(&runc_bin);
+        cmd_builder.arg("--root");
+        cmd_builder.arg(&root_path);
+        cmd_builder.arg("exec");
+        cmd_builder.arg("-t");
+        cmd_builder.arg(&container_id);
+        for c in &cmd {
+            cmd_builder.arg(c);
+        }
+
+        let mut child = match pair.slave.spawn_command(cmd_builder) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tcp_writer.write_all(format!("Exec error: {}\r\n", e).as_bytes()).await;
+                return;
+            }
+        };
+        drop(pair.slave);
+
+        let mut pty_reader = match pair.master.try_clone_reader() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let mut pty_writer = match pair.master.take_writer() {
+            Ok(w) => w,
+            Err(_) => return,
+        };
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+
+        // Thread: read PTY output and send to channel
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match pty_reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Task: forward PTY output to TCP as raw stream (Tty=true, no multiplex framing)
+        let write_task = tokio::spawn(async move {
+            while let Some(data) = rx.recv().await {
+                if tcp_writer.write_all(&data).await.is_err() {
+                    break;
+                }
+                let _ = tcp_writer.flush().await;
+            }
+        });
+
+        // Task: read from TCP (stdin from client) and write to PTY
+        let read_task = tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            loop {
+                match tcp_reader.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if pty_writer.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = pty_writer.flush();
+                    }
+                }
+            }
+        });
+
+        let _ = tokio::select! {
+            _ = write_task => {},
+            _ = read_task => {},
+        };
+        let _ = child.kill();
 }
 
 async fn inspect_exec_docker(Path(_exec_id): Path<String>) -> Json<serde_json::Value> {
@@ -858,12 +1192,19 @@ async fn inspect_exec_docker(Path(_exec_id): Path<String>) -> Json<serde_json::V
         "DetachKeys": "",
         "ExitCode": 0,
         "ID": _exec_id,
-        "Running": false,
-        "OpenStdin": false,
-        "OpenStderr": false,
+        "Running": true,
+        "OpenStdin": true,
+        "OpenStderr": true,
         "OpenStdout": true,
         "ContainerID": _exec_id.split(':').next().unwrap_or(&_exec_id)
     }))
+}
+
+async fn exec_resize_docker() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(axum::body::Body::empty())
+        .unwrap()
 }
 
 #[derive(Deserialize)]
@@ -897,6 +1238,14 @@ async fn get_container_stats_docker(
             .body(axum::body::Body::from_stream(stream))
             .unwrap()
     }
+}
+
+async fn start_attach_docker(
+    Path(id): Path<String>,
+    req: Request,
+) -> Response {
+    let cmd = vec!["/bin/sh".to_string()];
+    handle_tcp_hijack_exec(req, id, cmd).await
 }
 
 async fn attach_ws_docker(ws: WebSocketUpgrade, Path(id): Path<String>) -> Response {
@@ -946,12 +1295,19 @@ pub async fn handle_pty_session(socket: WebSocket, container_id: String, cmd: Ve
     };
 
     let runc_bin = get_runc_bin();
+    let root_path = format!("{}/runc", get_data_dir());
     let mut cmd_builder = CommandBuilder::new(runc_bin);
+    cmd_builder.arg("--root");
+    cmd_builder.arg(&root_path);
     cmd_builder.arg("exec");
     cmd_builder.arg("-t");
     cmd_builder.arg(&container_id);
-    for c in &cmd {
-        cmd_builder.arg(c);
+    if cmd.is_empty() {
+        cmd_builder.arg("/bin/sh");
+    } else {
+        for c in &cmd {
+            cmd_builder.arg(c);
+        }
     }
 
     let mut child = match pair.slave.spawn_command(cmd_builder) {
@@ -1028,6 +1384,11 @@ pub async fn handle_pty_session(socket: WebSocket, container_id: String, cmd: Ve
                                 pixel_width: 0,
                                 pixel_height: 0,
                             });
+                            continue;
+                        }
+                        if let Some(cmd_val) = val.get("cmd").and_then(|c| c.as_str()) {
+                            let _ = writer.write_all(cmd_val.as_bytes());
+                            let _ = writer.flush();
                             continue;
                         }
                     }

@@ -531,26 +531,81 @@ pub fn mount_overlayfs(image: &str, data_dir: &str, id: &str) -> Result<(), Stri
     Ok(())
 }
 
-pub fn list_images() -> Result<Vec<String>, String> {
+pub struct ImageInfo {
+    pub tag: String,
+    pub size: u64,
+    pub created: u64,
+}
+
+pub fn dir_size(path: impl AsRef<Path>) -> io::Result<u64> {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                total += dir_size(&p)?;
+            } else if let Ok(meta) = p.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    Ok(total)
+}
+
+pub fn list_images_info() -> Result<Vec<ImageInfo>, String> {
     let data_dir = get_data_dir();
     let images_dir = Path::new(&data_dir).join("images");
     let mut images = Vec::new();
-    if let Ok(entries) = fs::read_dir(images_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                if entry.path().is_dir() && entry.file_name() != "layers" {
-                    let name = entry.file_name().to_string_lossy().to_string()
-                        .replace('_', "/");
-                    if let Some(idx) = name.rfind('/') {
-                        let (repo, tag) = name.split_at(idx);
-                        let tag_clean = tag.trim_start_matches('/');
-                        images.push(format!("{}:{}", repo, tag_clean));
+    if let Ok(entries) = fs::read_dir(&images_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && entry.file_name() != "layers" {
+                let folder_name = entry.file_name().to_string_lossy().to_string();
+                let name = folder_name.replace('_', "/");
+                
+                let tag_str = if let Some(idx) = name.rfind('/') {
+                    let (repo, tag) = name.split_at(idx);
+                    let tag_clean = tag.trim_start_matches('/');
+                    format!("{}:{}", repo, tag_clean)
+                } else {
+                    name
+                };
+
+                let mut size = dir_size(&path).unwrap_or(0);
+                let created = fs::metadata(&path)
+                    .and_then(|m| m.created().or_else(|_| m.modified()))
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(1600000000);
+
+                let layers_json_path = path.join("layers.json");
+                if layers_json_path.exists() {
+                    if let Ok(file) = File::open(&layers_json_path) {
+                        if let Ok(layers) = serde_json::from_reader::<_, Vec<String>>(file) {
+                            let layers_dir = images_dir.join("layers");
+                            for layer in layers {
+                                let layer_path = layers_dir.join(layer);
+                                size += dir_size(&layer_path).unwrap_or(0);
+                            }
+                        }
                     }
                 }
+
+                images.push(ImageInfo {
+                    tag: tag_str,
+                    size,
+                    created,
+                });
             }
         }
     }
     Ok(images)
+}
+
+pub fn list_images() -> Result<Vec<String>, String> {
+    let infos = list_images_info()?;
+    Ok(infos.into_iter().map(|i| i.tag).collect())
 }
 
 pub fn remove_image(image: &str) -> Result<(), String> {
