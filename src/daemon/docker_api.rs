@@ -154,9 +154,15 @@ pub fn docker_router() -> Router {
         .route("/volumes/json", get(list_volumes_docker))
         .route("/volumes/create", post(create_volume_docker))
         .route("/volumes/prune", post(volumes_prune_docker))
+        .route("/volumes/{name}", get(inspect_volume_docker).delete(delete_volume_docker))
+        .route("/volumes/{name}/json", get(inspect_volume_docker))
         .route("/networks", get(list_networks_docker))
         .route("/networks/json", get(list_networks_docker))
-        .route("/networks/prune", post(networks_prune_docker));
+        .route("/networks/create", post(create_network_docker))
+        .route("/networks/prune", post(networks_prune_docker))
+        .route("/networks/{id}", get(inspect_network_docker).delete(delete_network_docker))
+        .route("/networks/{id}/connect", post(connect_network_docker))
+        .route("/networks/{id}/disconnect", post(disconnect_network_docker));
 
     let versions = ["v1.40", "v1.41", "v1.42", "v1.43", "v1.44", "v1.45", "v1.46", "v1.47"];
     for v in versions {
@@ -189,9 +195,15 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/volumes/json", v), get(list_volumes_docker))
             .route(&format!("/{}/volumes/create", v), post(create_volume_docker))
             .route(&format!("/{}/volumes/prune", v), post(volumes_prune_docker))
+            .route(&format!("/{}/volumes/{{name}}", v), get(inspect_volume_docker).delete(delete_volume_docker))
+            .route(&format!("/{}/volumes/{{name}}/json", v), get(inspect_volume_docker))
             .route(&format!("/{}/networks", v), get(list_networks_docker))
             .route(&format!("/{}/networks/json", v), get(list_networks_docker))
-            .route(&format!("/{}/networks/prune", v), post(networks_prune_docker));
+            .route(&format!("/{}/networks/create", v), post(create_network_docker))
+            .route(&format!("/{}/networks/prune", v), post(networks_prune_docker))
+            .route(&format!("/{}/networks/{{id}}", v), get(inspect_network_docker).delete(delete_network_docker))
+            .route(&format!("/{}/networks/{{id}}/connect", v), post(connect_network_docker))
+            .route(&format!("/{}/networks/{{id}}/disconnect", v), post(disconnect_network_docker));
     }
 
     router.layer(middleware::from_fn(strip_version_prefix))
@@ -410,6 +422,113 @@ async fn inspect_image_docker(Path(name): Path<String>) -> Json<serde_json::Valu
         "Architecture": "amd64",
         "Os": "linux"
     }))
+}
+
+async fn inspect_network_docker(Path(id): Path<String>) -> Response {
+    let networks = crate::network::list_networks();
+    if let Some(n) = networks.into_iter().find(|net| net.name == id || net.id == id || net.id.starts_with(&id)) {
+        (
+            StatusCode::OK,
+            Json(json!({
+                "Name": n.name,
+                "Id": n.id,
+                "Created": "2026-09-09T00:00:00Z",
+                "Scope": "local",
+                "Driver": n.driver,
+                "EnableIPv6": false,
+                "IPAM": {
+                    "Driver": "default",
+                    "Options": {},
+                    "Config": [{
+                        "Subnet": n.subnet,
+                        "Gateway": n.gateway
+                    }]
+                },
+                "Internal": false,
+                "Attachable": false,
+                "Ingress": false,
+                "Containers": {},
+                "Options": {}
+            })),
+        ).into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(json!({
+                "Name": id,
+                "Id": format!("net-{}", hex::encode(id.as_bytes())),
+                "Created": "2026-09-09T00:00:00Z",
+                "Scope": "local",
+                "Driver": "bridge",
+                "EnableIPv6": false,
+                "IPAM": {
+                    "Driver": "default",
+                    "Config": [{
+                        "Subnet": "172.19.0.0/16",
+                        "Gateway": "172.19.0.1"
+                    }]
+                },
+                "Containers": {}
+            })),
+        ).into_response()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CreateNetworkPayload {
+    #[serde(rename = "Name")]
+    pub name: Option<String>,
+}
+
+async fn create_network_docker(Json(payload): Json<CreateNetworkPayload>) -> Response {
+    let name = payload.name.unwrap_or_else(|| format!("net-{}", rand::random::<u32>()));
+    match crate::network::create_bridge_network(&name) {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "Id": id,
+                "Warning": ""
+            })),
+        ).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": e }))).into_response(),
+    }
+}
+
+async fn delete_network_docker(Path(id): Path<String>) -> Response {
+    let _ = crate::network::delete_bridge_network(&id);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn connect_network_docker(Path(_id): Path<String>) -> Response {
+    StatusCode::OK.into_response()
+}
+
+async fn disconnect_network_docker(Path(_id): Path<String>) -> Response {
+    StatusCode::OK.into_response()
+}
+
+async fn inspect_volume_docker(Path(name): Path<String>) -> Json<serde_json::Value> {
+    let volumes = crate::volume::list_volumes();
+    if let Some(v) = volumes.into_iter().find(|vol| vol.name == name) {
+        json!({
+            "Name": v.name,
+            "Driver": v.driver,
+            "Mountpoint": v.mountpoint,
+            "CreatedAt": "2026-09-09T00:00:00Z"
+        })
+    } else {
+        json!({
+            "Name": name,
+            "Driver": "local",
+            "Mountpoint": format!("/var/lib/zenobox/volumes/{}", name),
+            "CreatedAt": "2026-09-09T00:00:00Z"
+        })
+    }
+}
+
+async fn delete_volume_docker(Path(name): Path<String>) -> Response {
+    let _ = crate::volume::delete_volume(&name);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn list_volumes_docker() -> Json<serde_json::Value> {
