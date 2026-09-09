@@ -101,17 +101,23 @@ pub struct ExecStartPayload {
 }
 
 pub async fn strip_version_prefix(mut req: Request, next: Next) -> Response {
-    let path = req.uri().path().to_string();
+    let uri = req.uri().clone();
+    let path = uri.path().to_string();
     if path.starts_with("/v1.") || path.starts_with("/v2.") {
         if let Some(idx) = path[1..].find('/') {
             let new_path = &path[1 + idx..];
-            let new_uri = if let Some(query) = req.uri().query() {
+            let pq_str = if let Some(query) = uri.query() {
                 format!("{}?{}", new_path, query)
             } else {
                 new_path.to_string()
             };
-            if let Ok(uri) = new_uri.parse() {
-                *req.uri_mut() = uri;
+
+            let mut parts = uri.into_parts();
+            if let Ok(pq) = axum::http::uri::PathAndQuery::from_maybe_shared(pq_str) {
+                parts.path_and_query = Some(pq);
+                if let Ok(rebuilt) = axum::http::Uri::from_parts(parts) {
+                    *req.uri_mut() = rebuilt;
+                }
             }
         }
     }
@@ -119,7 +125,7 @@ pub async fn strip_version_prefix(mut req: Request, next: Next) -> Response {
 }
 
 pub fn docker_router() -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/_ping", get(ping))
         .route("/version", get(docker_version))
         .route("/info", get(docker_info))
@@ -150,8 +156,45 @@ pub fn docker_router() -> Router {
         .route("/volumes/prune", post(volumes_prune_docker))
         .route("/networks", get(list_networks_docker))
         .route("/networks/json", get(list_networks_docker))
-        .route("/networks/prune", post(networks_prune_docker))
-        .layer(middleware::from_fn(strip_version_prefix))
+        .route("/networks/prune", post(networks_prune_docker));
+
+    let versions = ["v1.40", "v1.41", "v1.42", "v1.43", "v1.44", "v1.45", "v1.46", "v1.47"];
+    for v in versions {
+        router = router
+            .route(&format!("/{}/_ping", v), get(ping))
+            .route(&format!("/{}/version", v), get(docker_version))
+            .route(&format!("/{}/info", v), get(docker_info))
+            .route(&format!("/{}/system/df", v), get(system_df_docker).post(system_df_docker))
+            .route(&format!("/{}/system/events", v), get(system_events_docker))
+            .route(&format!("/{}/system/prune", v), post(system_prune_docker))
+            .route(&format!("/{}/containers/json", v), get(list_containers_docker))
+            .route(&format!("/{}/containers/create", v), post(create_container_docker))
+            .route(&format!("/{}/containers/prune", v), post(containers_prune_docker))
+            .route(&format!("/{}/containers/{{id}}/json", v), get(inspect_container_docker))
+            .route(&format!("/{}/containers/{{id}}/start", v), post(start_container_docker))
+            .route(&format!("/{}/containers/{{id}}/stop", v), post(stop_container_docker))
+            .route(&format!("/{}/containers/{{id}}", v), delete(delete_container_docker))
+            .route(&format!("/{}/containers/{{id}}/logs", v), get(get_container_logs_docker))
+            .route(&format!("/{}/containers/{{id}}/stats", v), get(get_container_stats_docker))
+            .route(&format!("/{}/containers/{{id}}/attach/ws", v), get(attach_ws_docker))
+            .route(&format!("/{}/containers/{{id}}/exec", v), post(create_exec_docker))
+            .route(&format!("/{}/exec/{{id}}/start", v), post(start_exec_docker))
+            .route(&format!("/{}/exec/{{id}}/ws", v), get(exec_ws_docker))
+            .route(&format!("/{}/exec/{{id}}/json", v), get(inspect_exec_docker))
+            .route(&format!("/{}/images/json", v), get(list_images_docker))
+            .route(&format!("/{}/images/create", v), post(pull_image_docker))
+            .route(&format!("/{}/images/prune", v), post(images_prune_docker))
+            .route(&format!("/{}/images/{{name}}/json", v), get(inspect_image_docker))
+            .route(&format!("/{}/volumes", v), get(list_volumes_docker))
+            .route(&format!("/{}/volumes/json", v), get(list_volumes_docker))
+            .route(&format!("/{}/volumes/create", v), post(create_volume_docker))
+            .route(&format!("/{}/volumes/prune", v), post(volumes_prune_docker))
+            .route(&format!("/{}/networks", v), get(list_networks_docker))
+            .route(&format!("/{}/networks/json", v), get(list_networks_docker))
+            .route(&format!("/{}/networks/prune", v), post(networks_prune_docker));
+    }
+
+    router.layer(middleware::from_fn(strip_version_prefix))
 }
 
 async fn ping() -> Response {
