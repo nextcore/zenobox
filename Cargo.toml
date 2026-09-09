@@ -1,6 +1,6 @@
 [package]
 name = "zenobox"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 description = "Lightweight OCI Container Runtime & Docker Alternative in Rust"
 license = "Apache-2.0"
