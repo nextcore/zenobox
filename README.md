@@ -18,8 +18,8 @@
 ## 🔥 Why Zenobox?
 
 - **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~7.4MB static MUSL build, **~6MB RAM daemon footprint**). Uses **95% less memory** than Docker Engine + containerd.
-- **🔌 100% Docker Engine API & Unix Socket Compatible**: Direct `/var/run/docker.sock` & TCP `2375` REST API supporting Docker API `v1.40` through `v1.47` (including `/_ping`, `/version`, `/info`, `/containers/*`, `/images/*`).
-- **🖥️ 1Panel & Portainer Ready**: Native auto-detection and registration as Systemd (`docker.service`) or OpenRC service. Fully compatible with control panels like **1Panel**, **Portainer**, and VSCode Docker extension.
+- **🔌 100% Docker Engine API & Unix Socket Compatible**: Direct `/var/run/docker.sock` & TCP `2375` REST API supporting Docker API `v1.40` through `v1.47` (including `/_ping`, `/version`, `/info`, `/containers/*`, `/images/*`, `/networks/*`, `/volumes/*`).
+- **🖥️ 1Panel Tested & Ready**: Native auto-detection and registration as Systemd (`docker.service`) or OpenRC service. Fully tested and compatible with **1Panel** control panel.
 - **💻 Dual Mode Flexibility (Daemonless or Service)**: Run standalone daemonless CLI commands directly, or run background daemon service.
 - **🖥️ Real-time Interactive PTY Terminal**: Full WebSocket terminal exec (`/attach/ws`, `/exec/{id}/ws`) powered by `portable-pty` with dynamic window resize support.
 - **📊 Live Cgroup Stats Streaming**: Streaming CPU & Memory usage metrics directly from Linux `cgroups` (v1 & v2).
@@ -82,15 +82,16 @@ zenobox daemon --port 2375 --socket /var/run/docker.sock
 
 ---
 
-## 🌐 API & Control Panel Integration (1Panel / Portainer)
+## 🌐 API & 1Panel Integration
 
-Zenobox provides a drop-in replacement for the Docker Engine API over both **Unix Domain Socket (`/var/run/docker.sock`)** and **HTTP TCP (`:2375`)**:
+Zenobox provides a drop-in replacement for the Docker Engine API over both **Unix Domain Socket (`/var/run/docker.sock`)** and **HTTP TCP (`:2375`)**, fully tested with **1Panel**:
 
 | Feature | Docker Engine API Endpoint | Native REST Endpoint |
 | :--- | :--- | :--- |
 | **Ping & Version** | `GET /v1.41/_ping`, `GET /v1.41/version` | `GET /_ping`, `GET /version` |
 | **Engine Info** | `GET /v1.41/info` | `GET /info` |
 | **Container Lifecycle** | `GET /v1.41/containers/json`, `POST /create` | `GET/POST /api/v1/containers` |
+| **Network & Volume Inspect** | `GET /v1.41/networks/{id}`, `GET /v1.41/volumes/{name}` | `GET /api/v1/networks`, `GET /api/v1/volumes` |
 | **Live Stats Stream** | `GET /v1.41/containers/{id}/stats` | `GET /api/v1/containers/{id}/stats` |
 | **Interactive Terminal (WebSocket)** | `GET /v1.41/containers/{id}/attach/ws` | `GET /api/v1/containers/{id}/terminal` |
 | **Exec Session** | `POST /v1.41/containers/{id}/exec`, `/exec/{id}/start` | `POST /api/v1/exec` |
@@ -121,11 +122,11 @@ sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker-compose
 | :--- | :--- | :--- |
 | **Memory Footprint (Idle Daemon)** | Heavy (~150MB - 300MB RAM) | **Ultra-Lightweight (~6MB RAM)** |
 | **Standalone Daemonless Mode** | ❌ Requires running daemon | ✅ **Supported (Daemonless by default)** |
-| **Control Panel Support (1Panel, Portainer)** | ✅ Supported | ✅ **100% Supported (`/var/run/docker.sock`)** |
+| **Control Panel Support** | ✅ Supported | ✅ **1Panel Tested & Compatible (`/var/run/docker.sock`)** |
 | **Single-Node Containers & Compose** | ✅ Supported | ✅ **100% Supported** |
 | **Bridge Networking & Ports** | ✅ `docker0` | ✅ `zenobr0` (`veth` + `iptables` NAT) |
 | **Interactive PTY & Live Stats** | ✅ Supported | ✅ **Supported (WebSocket + Cgroups)** |
-| **Docker API Compatibility** | ✅ Native | ✅ **v1.40 - v1.47 Full Support** |
+| **Docker API Compatibility** | ✅ Native | ✅ **v1.40 - v1.47 Support** |
 | **Image Building (`docker build`)** | ✅ Built-in BuildKit | ❌ **Not Supported** (Pull pre-built images from registry) |
 | **Multi-Host Clustering (`docker swarm`)** | ✅ Supported | ❌ **Not Supported** (Single-Node VPS focus) |
 
