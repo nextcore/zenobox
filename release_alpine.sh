@@ -38,6 +38,50 @@ echo "    Zenobox Alpine (MUSL) Release Compiler        "
 echo "=================================================="
 echo -e "${NC}"
 
+# Parse Command Line Arguments
+CLEAN_CACHE=0
+CLEAN_DIST=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --clean|-c)
+            CLEAN_CACHE=1
+            shift
+            ;;
+        --clean-dist)
+            CLEAN_DIST=1
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --clean, -c      Hapus cache build Cargo (cargo clean) sebelum mengompilasi"
+            echo "  --clean-dist     Hapus artefak rilis lama di folder dist/ sebelum mengompilasi"
+            echo "  --help, -h       Tampilkan bantuan ini"
+            exit 0
+            ;;
+        *)
+            log_error "Opsi tidak dikenal: $1"
+            echo "Penggunaan: $0 [--clean|-c] [--clean-dist] [--help|-h]"
+            exit 1
+            ;;
+    esac
+done
+
+# Perform Cleanup if requested
+if [ $CLEAN_CACHE -eq 1 ]; then
+    log_info "Membersihkan cache kompilasi Cargo (cargo clean)..."
+    cargo clean
+    log_success "Cache kompilasi berhasil dibersihkan."
+fi
+
+if [ $CLEAN_DIST -eq 1 ]; then
+    log_info "Membersihkan direktori rilis (dist/)..."
+    rm -rf dist/*
+    log_success "Direktori dist/ berhasil dibersihkan."
+fi
+
 # 1. Version Detection
 GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null)
 if [ -n "$GIT_TAG" ]; then

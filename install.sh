@@ -98,37 +98,77 @@ mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/bin"
 INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
 cd "$INSTALL_DIR" || { log_error "Failed to enter directory $INSTALL_DIR"; exit 1; }
 
-# 3. Check for local build binary or download from Github Release
-LOCAL_BINARY="${SCRIPT_DIR}/target/release/zenobox"
+# 3. Download from GitHub Release (or optional local build)
+USE_LOCAL=0
+if [ "$1" = "--local" ]; then
+    USE_LOCAL=1
+fi
 
-if [ -f "$LOCAL_BINARY" ]; then
-    log_info "Found local release binary at ${LOCAL_BINARY}. Copying..."
-    cp "$LOCAL_BINARY" "$INSTALL_DIR/bin/zenobox"
+LOCAL_MUSL="${SCRIPT_DIR}/target/x86_64-unknown-linux-musl/release/zenobox"
+LOCAL_GNU="${SCRIPT_DIR}/target/release/zenobox"
+
+if [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_MUSL" ]; then
+    log_info "Found local MUSL release binary at ${LOCAL_MUSL}. Copying..."
+    cp "$LOCAL_MUSL" "$INSTALL_DIR/bin/zenobox"
+    chmod +x "$INSTALL_DIR/bin/zenobox"
+    log_success "Local Zenobox static binary installed."
+elif [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_GNU" ]; then
+    log_info "Found local release binary at ${LOCAL_GNU}. Copying..."
+    cp "$LOCAL_GNU" "$INSTALL_DIR/bin/zenobox"
     chmod +x "$INSTALL_DIR/bin/zenobox"
     log_success "Local Zenobox binary installed."
 else
     REPO_URL="https://github.com/nextcore/zenobox/releases/download/${VERSION}"
-    TARBALL_FILE="zenobox-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+    TARBALL_MUSL="zenobox-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+    TARBALL_GNU="zenobox-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
 
-    log_info "Downloading Zenobox release tarball..."
+    log_info "Downloading Zenobox release tarball from GitHub (${REPO_URL})..."
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -L -o "$TARBALL_FILE" -# "${REPO_URL}/${TARBALL_FILE}"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$TARBALL_FILE" "${REPO_URL}/${TARBALL_FILE}"
+    DOWNLOAD_SUCCESS=0
+    TARBALL_FILE=""
+
+    download_file() {
+        local file="$1"
+        if command -v curl >/dev/null 2>&1; then
+            curl -f -L -o "$file" -# "${REPO_URL}/${file}"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -O "$file" "${REPO_URL}/${file}"
+        fi
+    }
+
+    log_info "Attempting to download static MUSL release package (${TARBALL_MUSL})..."
+    if download_file "$TARBALL_MUSL" && [ -s "$TARBALL_MUSL" ]; then
+        TARBALL_FILE="$TARBALL_MUSL"
+        DOWNLOAD_SUCCESS=1
     else
-        log_error "curl or wget is required to download installer package."
-        exit 1
+        log_info "MUSL release package not found, trying GNU release package (${TARBALL_GNU})..."
+        if download_file "$TARBALL_GNU" && [ -s "$TARBALL_GNU" ]; then
+            TARBALL_FILE="$TARBALL_GNU"
+            DOWNLOAD_SUCCESS=1
+        fi
     fi
 
-    if [ -f "$TARBALL_FILE" ] && [ -s "$TARBALL_FILE" ]; then
+    if [ $DOWNLOAD_SUCCESS -eq 1 ] && [ -n "$TARBALL_FILE" ]; then
         log_info "Extracting Zenobox package..."
-        tar -xzf "$TARBALL_FILE" -C "$INSTALL_DIR/bin/" 2>/dev/null || mv "$TARBALL_FILE" "$INSTALL_DIR/bin/zenobox"
-        rm -f "$TARBALL_FILE"
+        # Extract binary directly into bin/
+        tar -xzf "$TARBALL_FILE" --strip-components=1 -C "$INSTALL_DIR/bin/" 2>/dev/null || \
+        tar -xzf "$TARBALL_FILE" -C "$INSTALL_DIR/bin/" 2>/dev/null || \
+        mv "$TARBALL_FILE" "$INSTALL_DIR/bin/zenobox"
+
+        # Fix nested binary path if extracted with directory prefix
+        for nested in "$INSTALL_DIR/bin/zenobox-"*/zenobox; do
+            if [ -f "$nested" ]; then
+                mv "$nested" "$INSTALL_DIR/bin/zenobox"
+                rm -rf "$(dirname "$nested")"
+            fi
+        done
+
+        rm -f "$TARBALL_FILE" "$TARBALL_MUSL" "$TARBALL_GNU" 2>/dev/null
         chmod +x "$INSTALL_DIR/bin/zenobox"
-        log_success "Zenobox binary downloaded and extracted."
+        log_success "Zenobox binary downloaded and installed successfully from GitHub Releases."
     else
-        log_warn "Could not download remote binary for ${VERSION}."
+        log_error "Could not download remote binary for ${VERSION} from GitHub Releases."
+        exit 1
     fi
 fi
 
