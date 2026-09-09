@@ -42,6 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CLEAN_CACHE=0
 CLEAN_DIST=0
+MANUAL_VERSION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,18 +54,23 @@ while [ $# -gt 0 ]; do
             CLEAN_DIST=1
             shift
             ;;
+        --version|-v)
+            MANUAL_VERSION="$2"
+            shift 2
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --clean, -c      Hapus cache build Cargo (cargo clean) sebelum mengompilasi"
-            echo "  --clean-dist     Hapus artefak rilis lama di folder dist/ sebelum mengompilasi"
-            echo "  --help, -h       Tampilkan bantuan ini"
+            echo "  --version, -v <ver> Set versi rilis secara manual (misal: v0.3.0)"
+            echo "  --clean, -c         Hapus cache build Cargo (cargo clean) sebelum mengompilasi"
+            echo "  --clean-dist        Hapus artefak rilis lama di folder dist/ sebelum mengompilasi"
+            echo "  --help, -h          Tampilkan bantuan ini"
             exit 0
             ;;
         *)
             log_error "Opsi tidak dikenal: $1"
-            echo "Penggunaan: $0 [--clean|-c] [--clean-dist] [--help|-h]"
+            echo "Penggunaan: $0 [--version|-v <ver>] [--clean|-c] [--clean-dist] [--help|-h]"
             exit 1
             ;;
     esac
@@ -79,7 +85,10 @@ fi
 # 1. Run Build Script
 BUILD_ARGS=""
 if [ $CLEAN_CACHE -eq 1 ]; then
-    BUILD_ARGS="--clean"
+    BUILD_ARGS="$BUILD_ARGS --clean"
+fi
+if [ -n "$MANUAL_VERSION" ]; then
+    BUILD_ARGS="$BUILD_ARGS --version $MANUAL_VERSION"
 fi
 
 log_info "Menjalankan script kompilasi build_alpine.sh..."
@@ -90,14 +99,18 @@ if [ $? -ne 0 ]; then
 fi
 
 # 2. Version & Target Detection
-GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null)
-if [ -n "$GIT_TAG" ]; then
-    VERSION="$GIT_TAG"
+if [ -n "$MANUAL_VERSION" ]; then
+    VERSION="$MANUAL_VERSION"
 else
-    CARGO_VERSION=$(grep '^version =' Cargo.toml | head -n1 | cut -d '"' -f2 2>/dev/null)
-    VERSION="v${CARGO_VERSION:-0.1.0}"
+    GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null)
+    if [ -n "$GIT_TAG" ]; then
+        VERSION="$GIT_TAG"
+    else
+        CARGO_VERSION=$(grep '^version =' Cargo.toml | head -n1 | cut -d '"' -f2 2>/dev/null)
+        VERSION="v${CARGO_VERSION:-0.1.0}"
+    fi
 fi
-log_info "Detected version: ${BOLD}${VERSION}${NC}"
+log_info "Release version: ${BOLD}${VERSION}${NC}"
 
 TARGET="x86_64-unknown-linux-musl"
 if [ ! -f "target/${TARGET}/release/zenobox" ] && [ -f "target/release/zenobox" ]; then

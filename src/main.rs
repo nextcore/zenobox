@@ -245,6 +245,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Normalize top-level `docker -v` to `-V`
+    if raw_args.len() == 2 && raw_args[1] == "-v" {
+        raw_args[1] = "-V".to_string();
+    }
+
     // Handle `docker compose` or `docker-compose` version & flag normalization for 1Panel
     if raw_args.len() > 1 && raw_args[1] == "compose" {
         if raw_args.len() == 2 {

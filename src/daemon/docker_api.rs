@@ -150,6 +150,7 @@ pub fn docker_router() -> Router {
         .route("/images/create", post(pull_image_docker))
         .route("/images/prune", post(images_prune_docker))
         .route("/images/{name}/json", get(inspect_image_docker))
+        .route("/images/{name}", delete(delete_image_docker))
         .route("/volumes", get(list_volumes_docker))
         .route("/volumes/json", get(list_volumes_docker))
         .route("/volumes/create", post(create_volume_docker))
@@ -191,6 +192,7 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/images/create", v), post(pull_image_docker))
             .route(&format!("/{}/images/prune", v), post(images_prune_docker))
             .route(&format!("/{}/images/{{name}}/json", v), get(inspect_image_docker))
+            .route(&format!("/{}/images/{{name}}", v), delete(delete_image_docker))
             .route(&format!("/{}/volumes", v), get(list_volumes_docker))
             .route(&format!("/{}/volumes/json", v), get(list_volumes_docker))
             .route(&format!("/{}/volumes/create", v), post(create_volume_docker))
@@ -422,6 +424,17 @@ async fn inspect_image_docker(Path(name): Path<String>) -> Json<serde_json::Valu
         "Architecture": "amd64",
         "Os": "linux"
     }))
+}
+
+async fn delete_image_docker(Path(name): Path<String>) -> Response {
+    let _ = crate::image::remove_image(&name);
+    (
+        StatusCode::OK,
+        Json(json!([
+            { "Untagged": name },
+            { "Deleted": format!("sha256:{}", hex::encode(name.as_bytes())) }
+        ])),
+    ).into_response()
 }
 
 async fn inspect_network_docker(Path(id): Path<String>) -> Response {

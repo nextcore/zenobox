@@ -88,10 +88,12 @@ if [ -t 0 ]; then
         INSTALL_DIR="$DIR_INPUT"
     fi
 
-    echo -n "Specify Zenobox target version (default: ${VERSION}): "
-    read -r VER_INPUT
-    if [ -n "$VER_INPUT" ]; then
-        VERSION="$VER_INPUT"
+    if [ $USE_LOCAL -eq 0 ]; then
+        echo -n "Specify Zenobox target version (default: ${VERSION}): "
+        read -r VER_INPUT
+        if [ -n "$VER_INPUT" ]; then
+            VERSION="$VER_INPUT"
+        fi
     fi
 fi
 
@@ -120,7 +122,22 @@ else
     exit 1
 fi
 
+# Stop running daemon service if active to prevent 'Text file busy' during update
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null; then
+    log_info "Stopping active docker service before binary installation..."
+    $SUDO_CMD systemctl stop docker 2>/dev/null
+fi
+
 cd "$INSTALL_DIR" || { log_error "Failed to enter directory $INSTALL_DIR"; exit 1; }
+
+# Helper function to install binary safely avoiding 'Text file busy'
+copy_binary_safe() {
+    local src="$1"
+    local dest="$2"
+    $SUDO_CMD rm -f "$dest" 2>/dev/null
+    $SUDO_CMD cp "$src" "$dest"
+    $SUDO_CMD chmod +x "$dest"
+}
 
 # 3. Download from GitHub Release (or optional local build)
 LOCAL_MUSL="${SCRIPT_DIR}/target/x86_64-unknown-linux-musl/release/zenobox"
@@ -128,13 +145,11 @@ LOCAL_GNU="${SCRIPT_DIR}/target/release/zenobox"
 
 if [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_MUSL" ]; then
     log_info "Found local MUSL release binary at ${LOCAL_MUSL}. Copying..."
-    $SUDO_CMD cp "$LOCAL_MUSL" "$INSTALL_DIR/bin/zenobox"
-    $SUDO_CMD chmod +x "$INSTALL_DIR/bin/zenobox"
+    copy_binary_safe "$LOCAL_MUSL" "$INSTALL_DIR/bin/zenobox"
     log_success "Local Zenobox static binary installed."
 elif [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_GNU" ]; then
     log_info "Found local release binary at ${LOCAL_GNU}. Copying..."
-    $SUDO_CMD cp "$LOCAL_GNU" "$INSTALL_DIR/bin/zenobox"
-    $SUDO_CMD chmod +x "$INSTALL_DIR/bin/zenobox"
+    copy_binary_safe "$LOCAL_GNU" "$INSTALL_DIR/bin/zenobox"
     log_success "Local Zenobox binary installed."
 else
     REPO_URL="https://github.com/nextcore/zenobox/releases/download/${VERSION}"

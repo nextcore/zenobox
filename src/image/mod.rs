@@ -554,15 +554,48 @@ pub fn list_images() -> Result<Vec<String>, String> {
 }
 
 pub fn remove_image(image: &str) -> Result<(), String> {
+    let data_dir = get_data_dir();
+    let images_dir = Path::new(&data_dir).join("images");
+
+    if !images_dir.exists() {
+        return Err(format!("Image '{}' not found", image));
+    }
+
+    let mut target_dir: Option<PathBuf> = None;
+
     let img_ref = parse_image_ref(image);
     let cache_dir_name = format!("{}_{}", img_ref.repository, img_ref.tag)
         .replace('/', "_")
         .replace(':', "_");
-    let data_dir = get_data_dir();
-    let cache_dir = Path::new(&data_dir).join("images").join(cache_dir_name);
+    let direct_cache = images_dir.join(&cache_dir_name);
+    if direct_cache.exists() {
+        target_dir = Some(direct_cache);
+    }
 
-    if cache_dir.exists() {
-        fs::remove_dir_all(cache_dir).map_err(|e| e.to_string())?;
+    if target_dir.is_none() {
+        let image_clean = image.trim_start_matches("sha256:");
+        if let Ok(entries) = fs::read_dir(&images_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() && entry.file_name() != "layers" {
+                    let folder_name = entry.file_name().to_string_lossy().to_string();
+                    let name_normalized = folder_name.replace('_', "/");
+                    let hex_id = hex::encode(name_normalized.as_bytes());
+
+                    if folder_name == image
+                        || name_normalized == image
+                        || hex_id.starts_with(image_clean)
+                        || folder_name.contains(image)
+                    {
+                        target_dir = Some(entry.path());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(dir) = target_dir {
+        fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
         let _ = prune_unused_layers();
         Ok(())
     } else {

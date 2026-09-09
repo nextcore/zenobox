@@ -266,6 +266,22 @@ impl<'de> serde::Deserialize<'de> for ComposeDependsOn {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ComposeLimits {
+    pub memory: Option<String>,
+    pub cpus: Option<serde_yaml::Value>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ComposeResources {
+    pub limits: Option<ComposeLimits>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ComposeDeploy {
+    pub resources: Option<ComposeResources>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ComposeHealthCheck {
     pub test: serde_yaml::Value,
     pub interval: Option<String>,
@@ -289,6 +305,7 @@ pub struct ComposeService {
     pub healthcheck: Option<ComposeHealthCheck>,
     pub mem_limit: Option<String>,
     pub cpus: Option<f64>,
+    pub deploy: Option<ComposeDeploy>,
     pub oom_score_adj: Option<i32>,
     pub read_only: Option<bool>,
     pub network_mode: Option<String>,
@@ -369,28 +386,14 @@ fn parse_memory_bytes(m_str: &str) -> i64 {
     num_str.parse::<i64>().unwrap_or(0) * unit
 }
 
-fn load_env_file(compose_path: &str, env_file_val: &serde_yaml::Value) -> HashMap<String, String> {
+fn load_env_file(compose_path: &str, env_file_val: Option<&serde_yaml::Value>) -> HashMap<String, String> {
     let mut env = HashMap::new();
     let compose_path_buf = Path::new(compose_path);
     let parent_dir = compose_path_buf.parent().unwrap_or_else(|| Path::new("."));
 
-    let files = match env_file_val {
-        serde_yaml::Value::String(s) => vec![s.clone()],
-        serde_yaml::Value::Sequence(seq) => {
-            let mut v = Vec::new();
-            for item in seq {
-                if let Some(s) = item.as_str() {
-                    v.push(s.to_string());
-                }
-            }
-            v
-        }
-        _ => Vec::new(),
-    };
-
-    for file_name in files {
-        let f_path = parent_dir.join(&file_name);
-        if let Ok(content) = fs::read_to_string(f_path) {
+    let dot_env = parent_dir.join(".env");
+    if dot_env.exists() {
+        if let Ok(content) = fs::read_to_string(&dot_env) {
             for line in content.lines() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -401,15 +404,54 @@ fn load_env_file(compose_path: &str, env_file_val: &serde_yaml::Value) -> HashMa
                     let k = parts[0].trim().to_string();
                     let v = parts[1].trim().to_string();
                     let v_clean = if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
-                        if v.len() >= 2 {
-                            v[1..v.len()-1].to_string()
-                        } else {
-                            v
-                        }
+                        if v.len() >= 2 { v[1..v.len()-1].to_string() } else { v }
                     } else {
                         v
                     };
                     env.insert(k, v_clean);
+                }
+            }
+        }
+    }
+
+    if let Some(val) = env_file_val {
+        let files = match val {
+            serde_yaml::Value::String(s) => vec![s.clone()],
+            serde_yaml::Value::Sequence(seq) => {
+                let mut v = Vec::new();
+                for item in seq {
+                    if let Some(s) = item.as_str() {
+                        v.push(s.to_string());
+                    }
+                }
+                v
+            }
+            _ => Vec::new(),
+        };
+
+        for file_name in files {
+            let f_path = parent_dir.join(&file_name);
+            if let Ok(content) = fs::read_to_string(f_path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+                    if parts.len() == 2 {
+                        let k = parts[0].trim().to_string();
+                        let v = parts[1].trim().to_string();
+                        let v_clean = if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+                            if v.len() >= 2 {
+                                v[1..v.len()-1].to_string()
+                            } else {
+                                v
+                            }
+                        } else {
+                            v
+                        };
+                        env.insert(k, v_clean);
+                    }
                 }
             }
         }
@@ -539,10 +581,14 @@ pub fn compose_up(path: &str) -> Result<String, String> {
 
     for name in ordered {
         let svc = &cf.services[&name];
-        output.push_str(&format!("▶ Service: {} (image: {:?})\n", name, svc.image));
 
-        let image = svc.image.as_ref().ok_or_else(|| format!("Service {} has no image", name))?;
-        let img_ref = parse_image_ref(image);
+        let loaded_env = load_env_file(path, svc.env_file.as_ref());
+
+        let raw_image = svc.image.as_ref().ok_or_else(|| format!("Service {} has no image", name))?;
+        let image = expand_env_vars(raw_image, &loaded_env);
+        output.push_str(&format!("▶ Service: {} (image: {:?})\n", name, image));
+
+        let img_ref = parse_image_ref(&image);
         let cache_dir_name = format!("{}_{}", img_ref.repository, img_ref.tag)
             .replace('/', "_")
             .replace(':', "_");
@@ -551,7 +597,7 @@ pub fn compose_up(path: &str) -> Result<String, String> {
             output.push_str(&format!("  ▶ Image {} not found locally. Pulling...\n", image));
             let rt = tokio::runtime::Handle::current();
             let pull_res = tokio::task::block_in_place(|| {
-                rt.block_on(async { pull_image(image).await })
+                rt.block_on(async { pull_image(&image).await })
             });
             match pull_res {
                 Ok(cmd) => cmd,
@@ -560,39 +606,54 @@ pub fn compose_up(path: &str) -> Result<String, String> {
                 }
             }
         } else {
-            get_image_default_cmd(image)
+            get_image_default_cmd(&image)
         };
 
-        let container_name = svc.container_name.as_ref().unwrap_or(&name);
+        let raw_container_name = svc.container_name.as_ref().unwrap_or(&name);
+        let container_name_expanded = expand_env_vars(raw_container_name, &loaded_env);
+        let container_name = if container_name_expanded.is_empty() { name.clone() } else { container_name_expanded };
 
-        let cont_p = container_dir(&data_dir, container_name);
+        let cont_p = container_dir(&data_dir, &container_name);
         if cont_p.exists() {
             output.push_str(&format!("  ▶ Container '{}' already exists. Stopping and removing first...\n", container_name));
-            let _ = container_stop(container_name);
-            let _ = container_delete(container_name);
+            let _ = container_stop(&container_name);
+            let _ = container_delete(&container_name);
         }
 
         let cmd_args = match (&svc.entrypoint, &svc.command) {
             (Some(entrypoint), Some(command)) => {
-                let mut cmd = entrypoint.0.clone();
-                cmd.extend(command.0.clone());
+                let mut cmd = Vec::new();
+                for arg in &entrypoint.0 {
+                    cmd.push(expand_env_vars(arg, &loaded_env));
+                }
+                for arg in &command.0 {
+                    cmd.push(expand_env_vars(arg, &loaded_env));
+                }
                 cmd
             }
             (Some(entrypoint), None) => {
-                entrypoint.0.clone()
+                let mut cmd = Vec::new();
+                for arg in &entrypoint.0 {
+                    cmd.push(expand_env_vars(arg, &loaded_env));
+                }
+                cmd
             }
             (None, Some(command)) => {
-                command.0.clone()
+                let mut cmd = Vec::new();
+                if !default_cmd.is_empty() {
+                    let first = &default_cmd[0];
+                    if first.contains("entrypoint") || first.ends_with(".sh") {
+                        cmd.push(first.clone());
+                    }
+                }
+                for arg in &command.0 {
+                    cmd.push(expand_env_vars(arg, &loaded_env));
+                }
+                cmd
             }
             (None, None) => {
                 default_cmd
             }
-        };
-
-        let loaded_env = if let Some(ref env_file_val) = svc.env_file {
-            load_env_file(path, env_file_val)
-        } else {
-            HashMap::new()
         };
 
         let mut env = HashMap::new();
@@ -602,13 +663,14 @@ pub fn compose_up(path: &str) -> Result<String, String> {
                 env.insert(k.clone(), expanded_v);
             }
         }
-        for (k, v) in loaded_env {
-            env.entry(k).or_insert(v);
+        for (k, v) in &loaded_env {
+            env.entry(k.clone()).or_insert(v.clone());
         }
 
         let mut volumes = Vec::new();
         if let Some(ref vols) = svc.volumes {
-            for v in vols {
+            for v_raw in vols {
+                let v = expand_env_vars(v_raw, &loaded_env);
                 let parts: Vec<&str> = v.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     let host_path = parts[0];
@@ -659,20 +721,32 @@ pub fn compose_up(path: &str) -> Result<String, String> {
                         volumes.push(format!("{}:{}", resolved_path, container_path));
                     }
                 } else {
-                    volumes.push(v.clone());
+                    volumes.push(v);
                 }
             }
         }
 
-        let ports = if let Some(ref p) = svc.ports {
-            p.0.clone()
-        } else {
-            Vec::new()
-        };
+        let mut ports = Vec::new();
+        if let Some(ref p) = svc.ports {
+            for raw_port in &p.0 {
+                let expanded = expand_env_vars(raw_port, &loaded_env);
+                if !expanded.is_empty() {
+                    ports.push(expanded);
+                }
+            }
+        }
 
         let restart_policy = svc.restart.as_deref().unwrap_or("no");
         let mem_limit = if let Some(ref limit) = svc.mem_limit {
-            parse_memory_bytes(limit)
+            parse_memory_bytes(&expand_env_vars(limit, &loaded_env))
+        } else if let Some(ref d) = svc.deploy {
+            if let Some(ref res) = d.resources {
+                if let Some(ref lim) = res.limits {
+                    if let Some(ref mem) = lim.memory {
+                        parse_memory_bytes(&expand_env_vars(mem, &loaded_env))
+                    } else { 0 }
+                } else { 0 }
+            } else { 0 }
         } else {
             0
         };
@@ -691,8 +765,8 @@ pub fn compose_up(path: &str) -> Result<String, String> {
         output.push_str(&format!("  ▶ Creating container '{}'...\n", container_name));
         let is_host_net = svc.network_mode.as_deref() == Some("host") || network_name == "host";
         container_create(
-            container_name,
-            image,
+            &container_name,
+            &image,
             cmd_args,
             env,
             svc.working_dir.as_deref().unwrap_or(""),
@@ -707,12 +781,12 @@ pub fn compose_up(path: &str) -> Result<String, String> {
             network_name,
         )?;
 
-        if let Err(e) = inject_hosts_entries(&data_dir, container_name, &cf.services, &name) {
+        if let Err(e) = inject_hosts_entries(&data_dir, &container_name, &cf.services, &name) {
             output.push_str(&format!("  ⚠ Warning: could not inject hosts: {}\n", e));
         }
 
         output.push_str(&format!("  ▶ Starting container '{}'...\n", container_name));
-        container_start(container_name)?;
+        container_start(&container_name)?;
 
         output.push_str(&format!("  ✓ Service '{}' is up.\n", name));
     }
