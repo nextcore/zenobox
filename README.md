@@ -135,9 +135,18 @@ sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker-compose
 
 ---
 
-## ⚠️ Scope & Intentional Omissions
+## ⚡ Memory Footprint & Resource Consumption
 
-Zenobox is engineered specifically as a **lightweight single-node OCI container runtime**. To maintain its minimal footprint (~6MB RAM) and zero-daemon simplicity, the following components are intentionally omitted:
+Zenobox is designed to run efficiently even on low-spec VPS instances ($2/mo VPS with 512MB RAM):
+
+| Process | Memory Footprint (RSS) | Memory Reduction |
+| :--- | :--- | :--- |
+| **Zenobox Daemon (`zenobox daemon`)** | **~10.8 MB RAM** | **~90% - 95% Less Memory** |
+| **Docker Engine (`dockerd` + `containerd`)** | **~150 MB - 250 MB RAM** | Standard Baseline |
+
+---
+
+## ⚠️ Known Limitations & Compatibility Notes
 
 1. **❌ Image Building (`docker build` / `buildkit`)**
    - **Why**: Image building requires complex layer overlay caching and compiler tooling that bloats runtime binaries.
@@ -145,6 +154,11 @@ Zenobox is engineered specifically as a **lightweight single-node OCI container 
 2. **❌ Multi-Host Clustering (`docker swarm`)**
    - **Why**: Zenobox targets single-node Linux servers, VPS instances, edge devices, and panel backends.
    - **Workflow**: For single-host multi-container stacks, use `zenobox compose` or native REST API.
+3. **⚠️ 1Panel Web Console Terminal (`xterm.js` Web Shell)**
+   - **Status**: Container Management, Inspect, Stats, Logs, Networks, and Volumes in 1Panel work **100% smoothly**. However, the 1Panel Web Console Terminal UI (`/exec/{id}/start` via 1Panel Agent Go SDK) currently experiences stream disconnects due to Go SDK HTTP hijack handshaking strictness.
+   - **Recommended Workarounds**:
+     - Use native CLI terminal: `zenobox exec -it <container_name> /bin/sh` (100% interactive & responsive).
+     - Use **Zenopanel** dashboard for direct native WebSocket terminal support.
 
 ---
 
