@@ -73,10 +73,19 @@ if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
     SUDO_CMD="sudo"
 fi
 
-# 1. Stop active containers or daemon if running
-if command -v zenobox >/dev/null 2>&1; then
-    log_info "Stopping active containers..."
-    zenobox ps -a >/dev/null 2>&1
+# 1. Stop active daemon & system services
+log_info "Stopping active containers and daemon services..."
+if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/docker.service ]; then
+    $SUDO_CMD systemctl stop docker 2>/dev/null
+    $SUDO_CMD systemctl disable docker 2>/dev/null
+    $SUDO_CMD rm -f /etc/systemd/system/docker.service
+    $SUDO_CMD systemctl daemon-reload 2>/dev/null
+    log_success "Stopped and removed Systemd 'docker.service'."
+elif command -v rc-service >/dev/null 2>&1 && [ -f /etc/init.d/docker ]; then
+    $SUDO_CMD rc-service docker stop 2>/dev/null
+    $SUDO_CMD rc-update del docker default 2>/dev/null
+    $SUDO_CMD rm -f /etc/init.d/docker
+    log_success "Stopped and removed OpenRC 'docker' service."
 fi
 
 # 2. Remove Installation Directory

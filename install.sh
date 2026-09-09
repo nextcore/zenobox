@@ -251,7 +251,64 @@ for RC in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_aliases" "$HOME/.profile";
     add_alias_if_missing "$RC"
 done
 
-# 6. Verification Check
+# 6. Auto-Detect Distro & Configure Docker Daemon Service (1Panel Compatible)
+log_info "Detecting Linux distribution and service manager..."
+
+DISTRO_INFO="Unknown Linux"
+if [ -f /etc/os-release ]; then
+    DISTRO_INFO="$(grep -E '^PRETTY_NAME=' /etc/os-release | cut -d= -f2 | tr -d '"')"
+fi
+log_info "Detected OS: ${BOLD}${DISTRO_INFO}${NC}"
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ]; then
+    log_info "Configuring Systemd service 'docker.service' for 1Panel compatibility..."
+
+    SERVICE_FILE="/etc/systemd/system/docker.service"
+    SERVICE_CONTENT="[Unit]
+Description=Zenobox Container Engine (Docker Compatible Daemon)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_DIR}/bin/zenobox daemon --port 2375
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+Alias=docker.service"
+
+    echo "$SERVICE_CONTENT" | $SUDO_CMD tee "$SERVICE_FILE" >/dev/null
+    $SUDO_CMD systemctl daemon-reload 2>/dev/null
+    $SUDO_CMD systemctl enable --now docker 2>/dev/null || $SUDO_CMD systemctl restart docker 2>/dev/null
+    log_success "Systemd 'docker.service' registered and activated on port 2375."
+
+elif command -v rc-service >/dev/null 2>&1 || [ -d /etc/init.d ]; then
+    log_info "Configuring OpenRC/Init service 'docker'..."
+
+    INIT_FILE="/etc/init.d/docker"
+    INIT_CONTENT="#!/sbin/openrc-run
+description=\"Zenobox Container Engine Daemon\"
+command=\"${INSTALL_DIR}/bin/zenobox\"
+command_args=\"daemon --port 2375\"
+command_background=\"yes\"
+pidfile=\"/run/zenobox.pid\""
+
+    echo "$INIT_CONTENT" | $SUDO_CMD tee "$INIT_FILE" >/dev/null
+    $SUDO_CMD chmod +x "$INIT_FILE"
+    if command -v rc-update >/dev/null 2>&1; then
+        $SUDO_CMD rc-update add docker default 2>/dev/null
+        $SUDO_CMD rc-service docker start 2>/dev/null
+    else
+        $SUDO_CMD service docker start 2>/dev/null
+    fi
+    log_success "OpenRC/Init 'docker' service registered and activated."
+else
+    log_warn "No supported service manager (Systemd/OpenRC) detected."
+    log_warn "To run daemon manually: ${INSTALL_DIR}/bin/zenobox daemon --port 2375"
+fi
+
+# 7. Verification Check
 echo ""
 log_info "Verifying Zenobox installation..."
 if command -v zenobox >/dev/null 2>&1; then
@@ -261,13 +318,14 @@ else
     log_warn "Zenobox installed at $INSTALL_DIR/bin/zenobox. Ensure $SYMLINK_DIR is in your PATH."
 fi
 
-# 7. Complete Notice
+# 8. Complete Notice
 echo -e "\n=================================================="
 log_success "Zenobox Installation Completed!"
 echo -e "=================================================="
 echo -e "${BOLD}Quick Commands:${NC}"
 echo -e "  - Test Docker replacement : ${CYAN}docker --help${NC}"
+echo -e "  - Check Docker Daemon API : ${CYAN}curl http://localhost:2375/v1.41/_ping${NC}"
+echo -e "  - Check Systemd Service   : ${CYAN}systemctl status docker${NC}"
 echo -e "  - Pull container image    : ${CYAN}docker pull alpine${NC}"
 echo -e "  - Run container           : ${CYAN}docker run -d -p 8080:80 --name my-nginx nginx:alpine${NC}"
-echo -e "  - Run Docker Compose      : ${CYAN}docker-compose up -d${NC}"
 echo -e "=================================================="
