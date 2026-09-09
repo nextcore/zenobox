@@ -187,11 +187,14 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/containers/{{id}}", v), delete(delete_container_docker))
             .route(&format!("/{}/containers/{{id}}/logs", v), get(get_container_logs_docker))
             .route(&format!("/{}/containers/{{id}}/stats", v), get(get_container_stats_docker))
+            .route(&format!("/{}/containers/{{id}}/attach", v), post(start_attach_docker).get(start_attach_docker))
             .route(&format!("/{}/containers/{{id}}/attach/ws", v), get(attach_ws_docker))
             .route(&format!("/{}/containers/{{id}}/exec", v), post(create_exec_docker))
             .route(&format!("/{}/exec/{{id}}/start", v), post(start_exec_docker).get(start_exec_docker))
             .route(&format!("/{}/exec/{{id}}/ws", v), get(exec_ws_docker))
             .route(&format!("/{}/exec/{{id}}/json", v), get(inspect_exec_docker))
+            .route(&format!("/{}/exec/{{id}}/resize", v), post(exec_resize_docker))
+            .route(&format!("/{}/containers/{{id}}/resize", v), post(exec_resize_docker))
             .route(&format!("/{}/images/json", v), get(list_images_docker))
             .route(&format!("/{}/images/create", v), post(pull_image_docker))
             .route(&format!("/{}/images/prune", v), post(images_prune_docker))
@@ -1035,37 +1038,10 @@ async fn start_exec_docker(
     }
 }
 
-async fn handle_tcp_hijack_exec(mut req: Request, container_id: String, cmd: Vec<String>) -> Response {
-    // Extract the OnUpgrade future from request extensions BEFORE consuming req
-    // hyper puts the OnUpgrade future in req.extensions() when the connection supports upgrades
-    let on_upgrade = req.extensions_mut().remove::<hyper::upgrade::OnUpgrade>();
+async fn handle_tcp_hijack_exec(req: Request, container_id: String, cmd: Vec<String>) -> Response {
+    let upgraded_fut = hyper::upgrade::on(req);
+    tokio::spawn(run_pty_bridge(upgraded_fut, container_id, cmd));
 
-    let on_upgrade = match on_upgrade {
-        Some(u) => u,
-        None => {
-            eprintln!("[zenobox] TCP hijack: no OnUpgrade extension found (connection may not support upgrades)");
-            // Axum's serve may not propagate OnUpgrade for all connection types.
-            // Fall back to trying hyper::upgrade::on with the request.
-            // We need to consume req here.
-            let upgraded_fut = hyper::upgrade::on(req);
-            tokio::spawn(run_pty_bridge(upgraded_fut, container_id, cmd));
-            return Response::builder()
-                .status(StatusCode::SWITCHING_PROTOCOLS)
-                .header("Content-Type", "application/vnd.docker.raw-stream")
-                .header("Connection", "Upgrade")
-                .header("Upgrade", "tcp")
-                .body(axum::body::Body::empty())
-                .unwrap();
-        }
-    };
-
-    // Drop req to avoid keeping any references
-    drop(req);
-
-    // Spawn background task: wait for upgrade to complete, then run PTY bridge
-    tokio::spawn(run_pty_bridge(on_upgrade, container_id, cmd));
-
-    // Return 101 immediately - upgrade future resolves after this response is sent
     Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header("Content-Type", "application/vnd.docker.raw-stream")
