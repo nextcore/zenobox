@@ -57,6 +57,7 @@ SYMLINK_DIR="/usr/local/bin"
 
 VERSION="$DEFAULT_VERSION"
 INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+USE_LOCAL=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -68,9 +69,13 @@ while [ $# -gt 0 ]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
+        --local)
+            USE_LOCAL=1
+            shift
+            ;;
         *)
             log_error "Unknown option: $1"
-            echo "Usage: $0 [--version <version>] [--dir <install_directory>]"
+            echo "Usage: $0 [--version <version>] [--dir <install_directory>] [--local]"
             exit 1
             ;;
     esac
@@ -90,32 +95,46 @@ if [ -t 0 ]; then
     fi
 fi
 
+# Detect Sudo/Root requirements
+SUDO_CMD=""
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+    SUDO_CMD="sudo"
+fi
+
 log_info "Install Directory : ${BOLD}${INSTALL_DIR}${NC}"
 log_info "Target Version    : ${BOLD}${VERSION}${NC}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/bin"
-INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
+
+# Ensure target directories exist with proper permissions
+$SUDO_CMD mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/bin" || {
+    log_error "Failed to create installation directory '$INSTALL_DIR'. Please run the script with sudo: 'sudo ./install.sh'"
+    exit 1
+}
+
+# Resolve absolute path safely
+if [ -d "$INSTALL_DIR" ]; then
+    INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
+else
+    log_error "Installation directory '$INSTALL_DIR' could not be accessed."
+    exit 1
+fi
+
 cd "$INSTALL_DIR" || { log_error "Failed to enter directory $INSTALL_DIR"; exit 1; }
 
 # 3. Download from GitHub Release (or optional local build)
-USE_LOCAL=0
-if [ "$1" = "--local" ]; then
-    USE_LOCAL=1
-fi
-
 LOCAL_MUSL="${SCRIPT_DIR}/target/x86_64-unknown-linux-musl/release/zenobox"
 LOCAL_GNU="${SCRIPT_DIR}/target/release/zenobox"
 
 if [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_MUSL" ]; then
     log_info "Found local MUSL release binary at ${LOCAL_MUSL}. Copying..."
-    cp "$LOCAL_MUSL" "$INSTALL_DIR/bin/zenobox"
-    chmod +x "$INSTALL_DIR/bin/zenobox"
+    $SUDO_CMD cp "$LOCAL_MUSL" "$INSTALL_DIR/bin/zenobox"
+    $SUDO_CMD chmod +x "$INSTALL_DIR/bin/zenobox"
     log_success "Local Zenobox static binary installed."
 elif [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_GNU" ]; then
     log_info "Found local release binary at ${LOCAL_GNU}. Copying..."
-    cp "$LOCAL_GNU" "$INSTALL_DIR/bin/zenobox"
-    chmod +x "$INSTALL_DIR/bin/zenobox"
+    $SUDO_CMD cp "$LOCAL_GNU" "$INSTALL_DIR/bin/zenobox"
+    $SUDO_CMD chmod +x "$INSTALL_DIR/bin/zenobox"
     log_success "Local Zenobox binary installed."
 else
     REPO_URL="https://github.com/nextcore/zenobox/releases/download/${VERSION}"
@@ -151,20 +170,20 @@ else
     if [ $DOWNLOAD_SUCCESS -eq 1 ] && [ -n "$TARBALL_FILE" ]; then
         log_info "Extracting Zenobox package..."
         # Extract binary directly into bin/
-        tar -xzf "$TARBALL_FILE" --strip-components=1 -C "$INSTALL_DIR/bin/" 2>/dev/null || \
-        tar -xzf "$TARBALL_FILE" -C "$INSTALL_DIR/bin/" 2>/dev/null || \
-        mv "$TARBALL_FILE" "$INSTALL_DIR/bin/zenobox"
+        $SUDO_CMD tar -xzf "$TARBALL_FILE" --strip-components=1 -C "$INSTALL_DIR/bin/" 2>/dev/null || \
+        $SUDO_CMD tar -xzf "$TARBALL_FILE" -C "$INSTALL_DIR/bin/" 2>/dev/null || \
+        $SUDO_CMD mv "$TARBALL_FILE" "$INSTALL_DIR/bin/zenobox"
 
         # Fix nested binary path if extracted with directory prefix
         for nested in "$INSTALL_DIR/bin/zenobox-"*/zenobox; do
             if [ -f "$nested" ]; then
-                mv "$nested" "$INSTALL_DIR/bin/zenobox"
-                rm -rf "$(dirname "$nested")"
+                $SUDO_CMD mv "$nested" "$INSTALL_DIR/bin/zenobox"
+                $SUDO_CMD rm -rf "$(dirname "$nested")"
             fi
         done
 
         rm -f "$TARBALL_FILE" "$TARBALL_MUSL" "$TARBALL_GNU" 2>/dev/null
-        chmod +x "$INSTALL_DIR/bin/zenobox"
+        $SUDO_CMD chmod +x "$INSTALL_DIR/bin/zenobox"
         log_success "Zenobox binary downloaded and installed successfully from GitHub Releases."
     else
         log_error "Could not download remote binary for ${VERSION} from GitHub Releases."
