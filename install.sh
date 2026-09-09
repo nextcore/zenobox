@@ -192,31 +192,29 @@ else
 fi
 
 # 4. Create Docker & Docker-Compose Symlinks
-log_info "Configuring system symlinks in ${SYMLINK_DIR}..."
+log_info "Configuring system symlinks..."
 
 SUDO_CMD=""
 if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
     SUDO_CMD="sudo"
 fi
 
-$SUDO_CMD ln -sf "$INSTALL_DIR/bin/zenobox" "$SYMLINK_DIR/zenobox" 2>/dev/null || {
+for TARGET_DIR in "/usr/local/bin" "/usr/bin"; do
+    if [ -d "$TARGET_DIR" ]; then
+        $SUDO_CMD ln -sf "$INSTALL_DIR/bin/zenobox" "$TARGET_DIR/zenobox" 2>/dev/null
+        $SUDO_CMD ln -sf "$INSTALL_DIR/bin/zenobox" "$TARGET_DIR/docker" 2>/dev/null
+        $SUDO_CMD ln -sf "$INSTALL_DIR/bin/zenobox" "$TARGET_DIR/docker-compose" 2>/dev/null
+    fi
+done
+
+if [ ! -f "/usr/bin/docker" ] && [ ! -f "/usr/local/bin/docker" ]; then
     mkdir -p "$HOME/.local/bin"
-    SYMLINK_DIR="$HOME/.local/bin"
-    ln -sf "$INSTALL_DIR/bin/zenobox" "$SYMLINK_DIR/zenobox"
-}
+    ln -sf "$INSTALL_DIR/bin/zenobox" "$HOME/.local/bin/zenobox"
+    ln -sf "$INSTALL_DIR/bin/zenobox" "$HOME/.local/bin/docker"
+    ln -sf "$INSTALL_DIR/bin/zenobox" "$HOME/.local/bin/docker-compose"
+fi
 
-$SUDO_CMD ln -sf "$INSTALL_DIR/bin/zenobox" "$SYMLINK_DIR/docker" 2>/dev/null || {
-    ln -sf "$INSTALL_DIR/bin/zenobox" "$SYMLINK_DIR/docker"
-}
-
-$SUDO_CMD ln -sf "$INSTALL_DIR/bin/zenobox" "$SYMLINK_DIR/docker-compose" 2>/dev/null || {
-    ln -sf "$INSTALL_DIR/bin/zenobox" "$SYMLINK_DIR/docker-compose"
-}
-
-log_success "Symlinks configured successfully:"
-echo "  - $SYMLINK_DIR/zenobox -> $INSTALL_DIR/bin/zenobox"
-echo "  - $SYMLINK_DIR/docker -> $INSTALL_DIR/bin/zenobox"
-echo "  - $SYMLINK_DIR/docker-compose -> $INSTALL_DIR/bin/zenobox"
+log_success "Symlinks configured successfully in system PATH locations."
 
 # 5. Configure Shell Aliases (~/.bashrc, ~/.zshrc, ~/.bash_aliases, ~/.profile)
 log_info "Configuring shell aliases in shell configuration files..."

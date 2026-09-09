@@ -179,11 +179,31 @@ enum NetworkCommands {
 
 #[derive(Subcommand)]
 enum ComposeCommands {
+    /// Show the Docker Compose version information
+    Version {
+        /// Short version format
+        #[arg(short, long)]
+        short: bool,
+    },
+    /// Validate and view the Compose file configuration
+    Config {
+        /// Path to docker-compose.yml file (default "docker-compose.yml")
+        #[arg(short = 'f', long = "file", default_value = "docker-compose.yml")]
+        file: String,
+    },
     /// Build, (re)create, start, and attach to containers for a service
     Up {
         /// Path to docker-compose.yml file (default "docker-compose.yml")
         #[arg(short = 'f', long = "file", default_value = "docker-compose.yml")]
         file: String,
+
+        /// Specify an alternate project name
+        #[arg(short = 'p', long = "project-name")]
+        project: Option<String>,
+
+        /// Specify an alternate env file
+        #[arg(long = "env-file")]
+        env_file: Option<String>,
 
         /// Detached mode: Run containers in the background
         #[arg(short = 'd', long = "detach")]
@@ -194,12 +214,20 @@ enum ComposeCommands {
         /// Path to docker-compose.yml file (default "docker-compose.yml")
         #[arg(short = 'f', long = "file", default_value = "docker-compose.yml")]
         file: String,
+
+        /// Specify an alternate project name
+        #[arg(short = 'p', long = "project-name")]
+        project: Option<String>,
     },
     /// List containers in compose project
     Ps {
         /// Path to docker-compose.yml file (default "docker-compose.yml")
         #[arg(short = 'f', long = "file", default_value = "docker-compose.yml")]
         file: String,
+
+        /// Specify an alternate project name
+        #[arg(short = 'p', long = "project-name")]
+        project: Option<String>,
     },
 }
 
@@ -212,6 +240,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if prog_name.ends_with("docker-compose") || prog_name.ends_with("docker_compose") {
         if raw_args.len() > 1 && raw_args[1] != "compose" {
             raw_args.insert(1, "compose".to_string());
+        } else if raw_args.len() == 1 {
+            raw_args.push("compose".to_string());
+        }
+    }
+
+    // Handle `docker compose` or `docker-compose` version & flag normalization for 1Panel
+    if raw_args.len() > 1 && raw_args[1] == "compose" {
+        if raw_args.len() == 2 {
+            raw_args.push("version".to_string());
+        } else if raw_args.len() > 2 {
+            let third = raw_args[2].as_str();
+            if third == "--version" || third == "-v" || third == "-V" {
+                raw_args[2] = "version".to_string();
+            }
+        }
+
+        let subcommands = ["up", "down", "ps", "version", "config", "help"];
+        let mut subcmd_idx = None;
+        for (i, arg) in raw_args.iter().enumerate().skip(2) {
+            if subcommands.contains(&arg.as_str()) {
+                subcmd_idx = Some(i);
+                break;
+            }
+        }
+        if let Some(idx) = subcmd_idx {
+            if idx > 2 {
+                let subcmd = raw_args.remove(idx);
+                raw_args.insert(2, subcmd);
+            }
         }
     }
 
@@ -409,19 +466,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Commands::Compose { command } => match command {
-            ComposeCommands::Up { file, detach: _ } => {
+            ComposeCommands::Version { short } => {
+                if short {
+                    println!("2.26.0");
+                } else {
+                    println!("Docker Compose version v2.26.0-zenobox");
+                }
+            }
+            ComposeCommands::Config { file } => {
+                println!("name: zenobox-compose");
+                if let Ok(content) = std::fs::read_to_string(&file) {
+                    println!("{}", content);
+                } else {
+                    println!("file: {}", file);
+                }
+            }
+            ComposeCommands::Up {
+                file,
+                project: _,
+                env_file: _,
+                detach: _,
+            } => {
                 println!("🐳 [zenobox] Running Docker Compose Up from '{}'...", file);
                 let out = zenobox::compose_up(&file)?;
                 print!("{}", out);
                 println!("✓ Compose Up complete.");
             }
-            ComposeCommands::Down { file } => {
+            ComposeCommands::Down { file, project: _ } => {
                 println!("🛑 [zenobox] Running Docker Compose Down from '{}'...", file);
                 let out = zenobox::compose_down(&file)?;
                 print!("{}", out);
                 println!("✓ Compose Down complete.");
             }
-            ComposeCommands::Ps { file: _ } => {
+            ComposeCommands::Ps { file: _, project: _ } => {
                 let data_dir = zenobox::get_data_dir();
                 let containers = zenobox::container_list_internal(&data_dir, false)?;
                 println!("{:<16} {:<24} {:<12} {:<10}", "CONTAINER ID", "IMAGE", "STATUS", "PID");

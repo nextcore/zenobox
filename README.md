@@ -50,7 +50,10 @@ cd zenobox
 # Build standard release
 cargo build --release
 
-# Or build static MUSL release for Alpine / Any Linux with cache clean options:
+# Build static MUSL binary for Alpine / Any Linux:
+./build_alpine.sh --clean
+
+# Or build & package release tarball (dist/) with SHA256 & optional GitHub release:
 ./release_alpine.sh --clean --clean-dist
 ```
 
