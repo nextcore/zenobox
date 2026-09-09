@@ -22,8 +22,36 @@ use crate::container::{
 use crate::image::{list_images, pull_image};
 use crate::utils::{get_data_dir, get_runc_bin};
 
+fn deserialize_bool_from_anything<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrStringOrInt {
+        Bool(bool),
+        Int(i64),
+        Str(String),
+    }
+
+    match Option::<BoolOrStringOrInt>::deserialize(deserializer)? {
+        Some(BoolOrStringOrInt::Bool(b)) => Ok(Some(b)),
+        Some(BoolOrStringOrInt::Int(i)) => Ok(Some(i != 0)),
+        Some(BoolOrStringOrInt::Str(s)) => {
+            let clean = s.trim().to_lowercase();
+            if clean == "1" || clean == "true" || clean == "t" || clean == "yes" {
+                Ok(Some(true))
+            } else {
+                Ok(Some(false))
+            }
+        }
+        None => Ok(None),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ContainerListQuery {
+    #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
     pub all: Option<bool>,
 }
 
@@ -431,6 +459,7 @@ async fn inspect_exec_docker(Path(_exec_id): Path<String>) -> Json<serde_json::V
 
 #[derive(Deserialize)]
 pub struct StatsQuery {
+    #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
     pub stream: Option<bool>,
 }
 
