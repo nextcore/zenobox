@@ -1,27 +1,55 @@
-# zsrc/docker_api.zl - Docker v1.41 Socket API Endpoints
+# zsrc/docker_api.zl - Docker v1.41 Socket API Endpoints (ZenoLang)
 
 # 1. Docker API Ping
 http.get: '/_ping' {
     http.text: 'OK' {
-        headers: { 'Builder-Version': 'zenobox/0.1.0' }
+        headers: { 'Builder-Version': 'zenobox/0.2.3' }
     }
 }
 
 # 2. Docker Version Information
-http.get: '/v1.41/version' {
+http.get: '/version' {
     http.json: {
         Platform: { Name: 'Zenobox Container Engine' }
-        Version: '0.1.0'
+        Version: '24.0.7'
         ApiVersion: '1.41'
         MinAPIVersion: '1.24'
-        GitCommit: 'zenobox-0.1.0'
+        GitCommit: 'zenobox-0.2.3'
         GoVersion: 'rustc-2024'
         Os: 'linux'
         Arch: 'amd64'
     }
 }
 
-# 3. Docker Container Listing
+http.get: '/v1.41/version' {
+    http.json: {
+        Platform: { Name: 'Zenobox Container Engine' }
+        Version: '24.0.7'
+        ApiVersion: '1.41'
+        MinAPIVersion: '1.24'
+        GitCommit: 'zenobox-0.2.3'
+        GoVersion: 'rustc-2024'
+        Os: 'linux'
+        Arch: 'amd64'
+    }
+}
+
+# 3. Docker System Disk Usage (1Panel Support)
+http.get: '/system/df' {
+    box.system_df: {
+        as: $df
+    }
+    http.json: $df
+}
+
+http.get: '/v1.41/system/df' {
+    box.system_df: {
+        as: $df
+    }
+    http.json: $df
+}
+
+# 4. Docker Container Listing
 http.get: '/v1.41/containers/json' {
     let show_all = $query.all == 'true' || $query.all == '1'
     box.list_containers: {
@@ -31,7 +59,16 @@ http.get: '/v1.41/containers/json' {
     http.json: $containers
 }
 
-# 4. Docker Create Container
+http.get: '/containers/json' {
+    let show_all = $query.all == 'true' || $query.all == '1'
+    box.list_containers: {
+        all: show_all
+        as: $containers
+    }
+    http.json: $containers
+}
+
+# 5. Docker Create Container
 http.post: '/v1.41/containers/create' {
     http.json_body: { as: $body }
     let name = $query.name
@@ -50,7 +87,7 @@ http.post: '/v1.41/containers/create' {
     }
 }
 
-# 5. Docker Start Container
+# 6. Docker Start Container
 http.post: '/v1.41/containers/:id/start' {
     box.start_container: {
         id: $params.id
@@ -59,7 +96,7 @@ http.post: '/v1.41/containers/:id/start' {
     http.no_content
 }
 
-# 6. Docker Stop Container
+# 7. Docker Stop Container
 http.post: '/v1.41/containers/:id/stop' {
     box.stop_container: {
         id: $params.id
@@ -68,7 +105,7 @@ http.post: '/v1.41/containers/:id/stop' {
     http.no_content
 }
 
-# 7. Docker Delete Container
+# 8. Docker Delete Container
 http.delete: '/v1.41/containers/:id' {
     box.delete_container: {
         id: $params.id
@@ -77,7 +114,7 @@ http.delete: '/v1.41/containers/:id' {
     http.no_content
 }
 
-# 8. Docker Container Stats
+# 9. Docker Container Stats
 http.get: '/v1.41/containers/:id/stats' {
     box.get_container_stats: {
         id: $params.id
@@ -86,10 +123,9 @@ http.get: '/v1.41/containers/:id/stats' {
     http.json: $stats
 }
 
-# 9. Docker WebSocket Attach Terminal
+# 10. Docker WebSocket Attach Terminal
 http.get: '/v1.41/containers/:id/attach/ws' {
     box.attach_terminal_ws: {
         id: $params.id
     }
 }
-
