@@ -997,17 +997,17 @@ async fn start_exec_docker(
         cmd_parts
     };
 
-    if is_tcp_hijack {
-        // req is consumed here in the tcp hijack path
-        return handle_tcp_hijack_exec(req, container_id, cmd_vec).await;
-    }
-
     if is_websocket {
         // req is consumed here in the websocket path
         if let Ok(ws) = WebSocketUpgrade::from_request(req, &()).await {
             return ws.on_upgrade(move |socket| handle_pty_session(socket, container_id, cmd_vec));
         }
         return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    if is_tcp_hijack {
+        // req is consumed here in the tcp hijack path
+        return handle_tcp_hijack_exec(req, container_id, cmd_vec).await;
     }
 
     // Non-interactive exec: run and return output
@@ -1172,7 +1172,12 @@ async fn inspect_exec_docker(Path(_exec_id): Path<String>) -> Json<serde_json::V
         "OpenStdin": true,
         "OpenStderr": true,
         "OpenStdout": true,
-        "ContainerID": _exec_id.split(':').next().unwrap_or(&_exec_id)
+        "ContainerID": _exec_id.split(':').next().unwrap_or(&_exec_id),
+        "ProcessConfig": {
+            "tty": true,
+            "entrypoint": "/bin/sh",
+            "arguments": []
+        }
     }))
 }
 
@@ -1339,7 +1344,8 @@ pub async fn handle_pty_session(socket: WebSocket, container_id: String, cmd: Ve
 
     let send_task = tokio::spawn(async move {
         while let Some(bytes) = rx_out.recv().await {
-            if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
+            // Send binary frame
+            if ws_sender.send(Message::Binary(bytes.clone().into())).await.is_err() {
                 break;
             }
         }
