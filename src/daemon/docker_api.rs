@@ -104,8 +104,12 @@ pub fn docker_router() -> Router {
         .route("/_ping", get(ping))
         .route("/version", get(docker_version))
         .route("/info", get(docker_info))
+        .route("/system/df", get(system_df_docker).post(system_df_docker))
+        .route("/system/events", get(system_events_docker))
+        .route("/system/prune", post(system_prune_docker))
         .route("/containers/json", get(list_containers_docker))
         .route("/containers/create", post(create_container_docker))
+        .route("/containers/prune", post(containers_prune_docker))
         .route("/containers/{id}/start", post(start_container_docker))
         .route("/containers/{id}/stop", post(stop_container_docker))
         .route("/containers/{id}", delete(delete_container_docker))
@@ -117,7 +121,10 @@ pub fn docker_router() -> Router {
         .route("/exec/{id}/ws", get(exec_ws_docker))
         .route("/exec/{id}/json", get(inspect_exec_docker))
         .route("/images/json", get(list_images_docker))
-        .route("/images/create", post(pull_image_docker));
+        .route("/images/create", post(pull_image_docker))
+        .route("/images/prune", post(images_prune_docker))
+        .route("/volumes/prune", post(volumes_prune_docker))
+        .route("/networks/prune", post(networks_prune_docker));
 
     let versions = ["v1.40", "v1.41", "v1.42", "v1.43", "v1.44", "v1.45", "v1.46", "v1.47"];
     for v in versions {
@@ -125,8 +132,12 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/_ping", v), get(ping))
             .route(&format!("/{}/version", v), get(docker_version))
             .route(&format!("/{}/info", v), get(docker_info))
+            .route(&format!("/{}/system/df", v), get(system_df_docker).post(system_df_docker))
+            .route(&format!("/{}/system/events", v), get(system_events_docker))
+            .route(&format!("/{}/system/prune", v), post(system_prune_docker))
             .route(&format!("/{}/containers/json", v), get(list_containers_docker))
             .route(&format!("/{}/containers/create", v), post(create_container_docker))
+            .route(&format!("/{}/containers/prune", v), post(containers_prune_docker))
             .route(&format!("/{}/containers/{{id}}/start", v), post(start_container_docker))
             .route(&format!("/{}/containers/{{id}}/stop", v), post(stop_container_docker))
             .route(&format!("/{}/containers/{{id}}", v), delete(delete_container_docker))
@@ -138,7 +149,10 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/exec/{{id}}/ws", v), get(exec_ws_docker))
             .route(&format!("/{}/exec/{{id}}/json", v), get(inspect_exec_docker))
             .route(&format!("/{}/images/json", v), get(list_images_docker))
-            .route(&format!("/{}/images/create", v), post(pull_image_docker));
+            .route(&format!("/{}/images/create", v), post(pull_image_docker))
+            .route(&format!("/{}/images/prune", v), post(images_prune_docker))
+            .route(&format!("/{}/volumes/prune", v), post(volumes_prune_docker))
+            .route(&format!("/{}/networks/prune", v), post(networks_prune_docker));
     }
 
     router
@@ -187,18 +201,130 @@ async fn docker_version() -> Json<serde_json::Value> {
 }
 
 async fn docker_info() -> Json<serde_json::Value> {
+    let data_dir = get_data_dir();
+    let containers = container_list_internal(&data_dir, true).unwrap_or_default();
+    let running = containers.iter().filter(|c| c.status == "running").count();
+    let stopped = containers.len() - running;
+    let images = list_images().unwrap_or_default();
+
     Json(json!({
         "ID": "ZENOBOX-DAEMON-01",
-        "Containers": 0,
-        "ContainersRunning": 0,
+        "Containers": containers.len(),
+        "ContainersRunning": running,
         "ContainersPaused": 0,
-        "ContainersStopped": 0,
-        "Images": 0,
+        "ContainersStopped": stopped,
+        "Images": images.len(),
         "Driver": "overlay2",
         "OperatingSystem": "Linux (Zenobox)",
         "NCPU": 4,
         "MemTotal": 8589934592u64,
-        "ServerVersion": "zenobox/0.1.0"
+        "ServerVersion": "24.0.7"
+    }))
+}
+
+async fn system_df_docker() -> Json<serde_json::Value> {
+    let data_dir = get_data_dir();
+    let containers = container_list_internal(&data_dir, true).unwrap_or_default();
+    let images = list_images().unwrap_or_default();
+    let volumes = crate::volume::list_volumes();
+
+    let mut images_json = Vec::new();
+    for img in images {
+        images_json.push(json!({
+            "Id": format!("sha256:{}", hex::encode(img.as_bytes())),
+            "ParentId": "",
+            "RepoTags": [img],
+            "RepoDigests": [],
+            "Created": 1600000000,
+            "Size": 15000000u64,
+            "SharedSize": 0,
+            "VirtualSize": 15000000u64,
+            "Containers": 1
+        }));
+    }
+
+    let mut containers_json = Vec::new();
+    for c in containers {
+        let state_str = if c.status == "running" { "running" } else { "exited" };
+        let status_str = format!("Up ({})", c.status);
+        containers_json.push(json!({
+            "Id": c.id,
+            "Names": [format!("/{}", c.id)],
+            "Image": c.image,
+            "ImageID": format!("sha256:{}", hex::encode(c.image.as_bytes())),
+            "Command": "zenobox",
+            "Created": 1600000000,
+            "State": state_str,
+            "Status": status_str,
+            "SizeRw": 0,
+            "SizeRootFs": 10000000u64
+        }));
+    }
+
+    let mut volumes_json = Vec::new();
+    for v in volumes {
+        volumes_json.push(json!({
+            "Name": v.name,
+            "Driver": v.driver,
+            "Mountpoint": v.mountpoint,
+            "Createdat": "2026-09-09T00:00:00Z",
+            "UsageData": {
+                "Size": 0,
+                "RefCount": 1
+            }
+        }));
+    }
+
+    Json(json!({
+        "LayersSize": 0,
+        "Images": images_json,
+        "Containers": containers_json,
+        "Volumes": volumes_json,
+        "BuildCache": []
+    }))
+}
+
+async fn system_events_docker() -> Response {
+    (StatusCode::OK, Json(json!({}))).into_response()
+}
+
+async fn system_prune_docker() -> Json<serde_json::Value> {
+    Json(json!({
+        "ContainersDeleted": [],
+        "ImagesDeleted": [],
+        "VolumesDeleted": [],
+        "SpaceReclaimed": 0
+    }))
+}
+
+async fn containers_prune_docker() -> Json<serde_json::Value> {
+    Json(json!({
+        "ContainersDeleted": [],
+        "SpaceReclaimed": 0
+    }))
+}
+
+async fn images_prune_docker() -> Json<serde_json::Value> {
+    let _ = crate::image::prune_unused_layers();
+    Json(json!({
+        "ImagesDeleted": [],
+        "SpaceReclaimed": 0
+    }))
+}
+
+async fn volumes_prune_docker() -> Json<serde_json::Value> {
+    Json(json!({
+        "VolumesDeleted": [],
+        "SpaceReclaimed": 0
+    }))
+}
+
+async fn networks_prune_docker() -> Json<serde_json::Value> {
+    let data_dir = get_data_dir();
+    let _ = crate::network::prune_networks(&data_dir);
+    Json(json!({
+        "NetworksDeleted": [],
+        "SpaceReclaimed": 0
     }))
 }
 
