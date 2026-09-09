@@ -599,9 +599,11 @@ async fn list_networks_docker() -> Json<serde_json::Value> {
     Json(json!(net_json))
 }
 
-async fn list_containers_docker(Query(q): Query<ContainerListQuery>) -> Json<serde_json::Value> {
+async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -> Json<serde_json::Value> {
     let data_dir = get_data_dir();
-    let show_all = q.all.unwrap_or(false);
+    let show_all = params.get("all")
+        .map(|v| v == "1" || v == "true" || v == "t" || v == "yes")
+        .unwrap_or(false);
     let containers = container_list_internal(&data_dir, true).unwrap_or_default();
 
     let mut result = Vec::new();
@@ -631,10 +633,19 @@ async fn list_containers_docker(Query(q): Query<ContainerListQuery>) -> Json<ser
             "Id": c.id,
             "Names": [format!("/{}", c.id)],
             "Image": c.image,
+            "ImageID": format!("sha256:{}", hex::encode(c.image.as_bytes())),
+            "Command": "zenobox",
+            "Created": 1600000000,
             "State": state_str,
             "Status": status_str,
-            "Created": 1600000000,
-            "Ports": ports_json
+            "Ports": ports_json,
+            "Labels": {},
+            "HostConfig": {
+                "NetworkMode": c.network.clone().unwrap_or_else(|| "bridge".to_string())
+            },
+            "NetworkSettings": {
+                "Networks": {}
+            }
         }));
     }
 
@@ -776,16 +787,17 @@ async fn list_images_docker() -> Json<serde_json::Value> {
     Json(json!(result))
 }
 
-#[derive(Deserialize)]
-pub struct PullImageQuery {
-    pub from_image: Option<String>,
-    pub tag: Option<String>,
-}
-
-async fn pull_image_docker(Query(q): Query<PullImageQuery>) -> Response {
-    let img_name = q.from_image.unwrap_or_else(|| "alpine".to_string());
-    let tag = q.tag.unwrap_or_else(|| "latest".to_string());
-    let full_ref = format!("{}:{}", img_name, tag);
+async fn pull_image_docker(Query(params): Query<HashMap<String, String>>) -> Response {
+    let img_name = params.get("fromImage")
+        .or_else(|| params.get("from_image"))
+        .cloned()
+        .unwrap_or_else(|| "alpine".to_string());
+    let tag = params.get("tag").cloned().unwrap_or_else(|| "latest".to_string());
+    let full_ref = if img_name.contains(':') {
+        img_name
+    } else {
+        format!("{}:{}", img_name, tag)
+    };
 
     match pull_image(&full_ref).await {
         Ok(_) => (StatusCode::OK, Json(json!({ "status": "Download complete" }))).into_response(),
