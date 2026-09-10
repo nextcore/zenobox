@@ -154,11 +154,8 @@ Zenobox is designed to run efficiently even on low-spec VPS instances ($2/mo VPS
 2. **❌ Multi-Host Clustering (`docker swarm`)**
    - **Why**: Zenobox targets single-node Linux servers, VPS instances, edge devices, and panel backends.
    - **Workflow**: For single-host multi-container stacks, use `zenobox compose` or native REST API.
-3. **⚠️ 1Panel Web Console Terminal (`xterm.js` Web Shell)**
-   - **Status**: Container Management, Inspect, Stats, Logs, Networks, and Volumes in 1Panel work **100% smoothly**. However, the 1Panel Web Console Terminal UI (`/exec/{id}/start` via 1Panel Agent Go SDK) currently experiences stream disconnects due to Go SDK HTTP hijack handshaking strictness.
-   - **Recommended Workarounds**:
-     - Use native CLI terminal: `zenobox exec -it <container_name> /bin/sh` (100% interactive & responsive).
-     - Use **Zenopanel** dashboard for direct native WebSocket terminal support.
+3. **✅ 1Panel AppStore & Container Management**
+   - **Status**: 1Panel App Store installations, image pulling, Compose lifecycle (`start`, `stop`, `restart`), container **Pause / Resume**, stats streaming, and terminal exec work **100% smoothly** in Zenobox `v0.2.7`.
 
 ---
 
