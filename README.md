@@ -10,14 +10,14 @@
 
 <p align="center">
   <b>Ultra-lightweight, standalone OCI Container Runtime & Docker Engine Alternative in Rust.</b><br>
-  <i>Runs standard containers & Docker Compose with ~8.4MB RAM footprint—daemonless by default or 1Panel API compatible.</i>
+  <i>Runs standard containers & Docker Compose with ~3.8MB RAM footprint—daemonless by default or 1Panel API compatible.</i>
 </p>
 
 ---
 
 ## 🔥 Why Zenobox?
 
-- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~6MB RAM daemon footprint**). Uses **95% less memory** than Docker Engine + containerd.
+- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~3.8MB RAM daemon footprint**). Uses **95% - 98% less memory** than Docker Engine + containerd.
 - **🔌 100% Docker Engine API & Unix Socket Compatible**: Direct `/var/run/docker.sock` & TCP `2375` REST API supporting Docker API `v1.40` through `v1.47` (including `/_ping`, `/version`, `/info`, `/containers/*`, `/images/*`, `/networks/*`, `/volumes/*`).
 - **🖥️ 1Panel Tested & Ready**: Native auto-detection and registration as Systemd (`docker.service`) or OpenRC service. Fully tested and compatible with **1Panel** control panel & 1Panel Web UI Terminal.
 - **💻 Dual Mode Flexibility (Daemonless or Service)**: Run standalone daemonless CLI commands directly, or run background daemon service.
