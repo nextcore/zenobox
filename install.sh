@@ -51,7 +51,16 @@ if [ "$ARCH" != "x86_64" ]; then
 fi
 
 # 2. Version & Directories Setup
-DEFAULT_VERSION="v0.2.7"
+GIT_TAG="$(git describe --tags --abbrev=0 2>/dev/null)"
+CARGO_VER="$(grep '^version =' Cargo.toml 2>/dev/null | head -n1 | cut -d '"' -f2)"
+if [ -n "$GIT_TAG" ]; then
+    DEFAULT_VERSION="$GIT_TAG"
+elif [ -n "$CARGO_VER" ]; then
+    DEFAULT_VERSION="v${CARGO_VER}"
+else
+    DEFAULT_VERSION="v0.2.8"
+fi
+
 DEFAULT_INSTALL_DIR="/opt/zenobox"
 SYMLINK_DIR="/usr/local/bin"
 
