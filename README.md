@@ -123,15 +123,9 @@ sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker-compose
 
 | Capability | Docker Engine (`dockerd`) | Zenobox Runtime |
 | :--- | :--- | :--- |
-| **Memory Footprint (Idle Daemon)** | Heavy (~150MB - 300MB RAM) | **Ultra-Lightweight (~6MB RAM)** |
+| **Memory Footprint (Idle Daemon)** | Heavy (~150MB - 300MB RAM) | **Ultra-Lightweight (~3.8MB - 6.8MB RAM)** |
 | **Standalone Daemonless Mode** | ❌ Requires running daemon | ✅ **Supported (Daemonless by default)** |
 | **Control Panel Support** | ✅ Supported | ✅ **1Panel Tested & Compatible (`/var/run/docker.sock` & Web UI Terminal)** |
-| **Single-Node Containers & Compose** | ✅ Supported | ✅ **100% Supported** |
-| **Bridge Networking & Ports** | ✅ `docker0` | ✅ `zenobr0` (`veth` + `iptables` NAT) |
-| **Interactive PTY & Live Stats** | ✅ Supported | ✅ **Supported (WebSocket + Cgroups)** |
-| **Docker API Compatibility** | ✅ Native | ✅ **v1.40 - v1.47 Support** |
-| **Image Building (`docker build`)** | ✅ Built-in BuildKit | ❌ **Not Supported** (Pull pre-built images from registry) |
-| **Multi-Host Clustering (`docker swarm`)** | ✅ Supported | ❌ **Not Supported** (Single-Node VPS focus) |
 | **Single-Node Containers & Compose** | ✅ Supported | ✅ **100% Supported** |
 | **Bridge Networking & Ports** | ✅ `docker0` | ✅ `zenobr0` (`veth` + `iptables` NAT) |
 | **Interactive PTY & Live Stats** | ✅ Supported | ✅ **Supported (WebSocket + Cgroups)** |
@@ -145,10 +139,10 @@ sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker-compose
 
 Zenobox is designed to run efficiently even on low-spec VPS instances ($2/mo VPS with 512MB RAM):
 
-| Process | Memory Footprint (RSS) | Memory Reduction |
-| :--- | :--- | :--- |
-| **Zenobox Daemon (`zenobox daemon`)** | **~4.8 MB - 6.8 MB RAM (Peak ~17MB)** | **~95% - 98% Less Memory** |
-| **Docker Engine (`dockerd` + `containerd`)** | **~150 MB - 250 MB RAM** | Standard Baseline |
+| Process | Memory Footprint (RSS) | Memory Reduction | CPU Overhead |
+| :--- | :--- | :--- | :--- |
+| **Zenobox Daemon (`zenobox daemon`)** | **~3.8 MB - 6.8 MB RAM** *(Peak ~10.2M - 23.3M)* | **~95% - 98% Less Memory** | **~0.1% CPU (Instant <1ms response)** |
+| **Docker Engine (`dockerd` + `containerd`)** | **~150 MB - 250 MB RAM** | Standard Baseline | ~2% - 5% CPU |
 
 ---
 
