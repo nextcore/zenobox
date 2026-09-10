@@ -323,6 +323,7 @@ async fn system_df_docker() -> Json<serde_json::Value> {
     for c in containers {
         let state_str = if c.status == "running" { "running" } else if c.status == "paused" { "paused" } else { "exited" };
         let status_str = if c.status == "paused" { "Paused".to_string() } else if c.status == "running" { "Up".to_string() } else { format!("Exited ({})", c.exit_code.unwrap_or(0)) };
+        println!("[LIST_CONTAINERS] id={} status={} state_str={} status_str={}", c.id, c.status, state_str, status_str);
         
         let mut labels_map = serde_json::Map::new();
         labels_map.insert("com.docker.compose.project".to_string(), json!("1panel"));
@@ -480,7 +481,7 @@ async fn inspect_container_docker(Path(id): Path<String>) -> Response {
                 "Args": c.cmd.iter().skip(1).collect::<Vec<_>>(),
                 "State": {
                     "Status": state_str,
-                    "Running": c.status == "running" || c.status == "paused",
+                    "Running": c.status == "running",
                     "Paused": c.status == "paused",
                     "Restarting": false,
                     "OOMKilled": false,
@@ -769,13 +770,21 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
 
     let mut result = Vec::new();
     for c in containers {
-        if !show_all && c.status != "running" {
+        if !show_all && c.status != "running" && c.status != "paused" {
             continue;
         }
 
-        let state_str = if c.status == "running" { "running" } else { "exited" };
-        // Calculate uptime for human-readable status
-        let status_str = if c.status == "running" {
+        let state_str = if c.status == "running" {
+            "running"
+        } else if c.status == "paused" {
+            "paused"
+        } else {
+            "exited"
+        };
+
+        let status_str = if c.status == "paused" {
+            "Paused".to_string()
+        } else if c.status == "running" {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&c.created_at) {
                 let now = chrono::Utc::now();
                 let secs = (now - dt.with_timezone(&chrono::Utc)).num_seconds();
@@ -792,7 +801,7 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
                 "Up".to_string()
             }
         } else {
-            format!("Exited (0) {} ago", "seconds")
+            format!("Exited ({}) seconds ago", c.exit_code.unwrap_or(0))
         };
 
         // Created timestamp
@@ -818,6 +827,11 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
             }
         }
 
+        let mut labels_map = serde_json::Map::new();
+        labels_map.insert("com.docker.compose.project".to_string(), json!("1panel"));
+        labels_map.insert("com.docker.compose.service".to_string(), json!(c.id));
+        labels_map.insert("com.docker.compose.version".to_string(), json!("2.20.0"));
+
         let net_mode = c.network.clone().unwrap_or_else(|| "bridge".to_string());
         result.push(json!({
             "Id": c.id,
@@ -829,14 +843,14 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
             "State": state_str,
             "Status": status_str,
             "Ports": ports_json,
-            "Labels": {},
+            "Labels": labels_map,
             "HostConfig": {
                 "NetworkMode": net_mode.clone()
             },
             "NetworkSettings": {
                 "Networks": {
                     net_mode.clone(): {
-                        "IPAddress": ""
+                        "IPAddress": c.env.as_ref().and_then(|e| e.get("ZENO_IP").cloned()).unwrap_or_default()
                     }
                 }
             }

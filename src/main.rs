@@ -4,7 +4,7 @@ use std::collections::HashMap;
 #[derive(Parser)]
 #[command(name = "zenobox")]
 #[command(author = "NextCore <github.com/nextcore>")]
-#[command(version = "0.2.6")]
+#[command(version = "0.2.7")]
 #[command(about = "Lightweight OCI Container Runtime & Docker Alternative in Rust", long_about = None)]
 struct Cli {
     #[command(subcommand)]

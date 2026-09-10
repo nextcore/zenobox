@@ -51,7 +51,7 @@ if [ "$ARCH" != "x86_64" ]; then
 fi
 
 # 2. Version & Directories Setup
-DEFAULT_VERSION="v0.2.6"
+DEFAULT_VERSION="v0.2.7"
 DEFAULT_INSTALL_DIR="/opt/zenobox"
 SYMLINK_DIR="/usr/local/bin"
 
