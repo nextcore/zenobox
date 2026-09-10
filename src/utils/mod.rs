@@ -30,6 +30,7 @@ pub struct ContainerState {
     pub oom_score_adj: Option<i32>,
     pub read_only: Option<bool>,
     pub network: Option<String>,
+    pub labels: Option<HashMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

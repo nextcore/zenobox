@@ -295,28 +295,35 @@ pub async fn pull_image(image: &str) -> Result<Vec<String>, String> {
                 fs::write(&tar_gz_path, &blob_bytes).map_err(|e| e.to_string())?;
             }
 
-            fs::create_dir_all(&layer_rootfs).map_err(|e| e.to_string())?;
-            let tar_gz = File::open(&tar_gz_path).map_err(|e| e.to_string())?;
-            let tar = flate2::read::GzDecoder::new(tar_gz);
-            let mut archive = tar::Archive::new(tar);
-            archive.set_preserve_permissions(true);
-            archive.set_unpack_xattrs(false);
+            let layer_rootfs_clone = layer_rootfs.clone();
+            let tar_gz_path_clone = tar_gz_path.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                fs::create_dir_all(&layer_rootfs_clone).map_err(|e| e.to_string())?;
+                let tar_gz = File::open(&tar_gz_path_clone).map_err(|e| e.to_string())?;
+                let tar = flate2::read::GzDecoder::new(tar_gz);
+                let mut archive = tar::Archive::new(tar);
+                archive.set_preserve_permissions(true);
+                archive.set_unpack_xattrs(false);
 
-            if let Ok(entries) = archive.entries() {
-                for entry_result in entries {
-                    if let Ok(mut entry) = entry_result {
-                        if let Ok(path) = entry.path() {
-                            let target_path = Path::new(&layer_rootfs).join(&path);
-                            if let Some(parent) = target_path.parent() {
-                                let _ = fs::create_dir_all(parent);
+                if let Ok(entries) = archive.entries() {
+                    for entry_result in entries {
+                        if let Ok(mut entry) = entry_result {
+                            if let Ok(path) = entry.path() {
+                                let target_path = Path::new(&layer_rootfs_clone).join(&path);
+                                if let Some(parent) = target_path.parent() {
+                                    let _ = fs::create_dir_all(parent);
+                                }
+                                let _ = entry.unpack_in(&layer_rootfs_clone);
                             }
-                            let _ = entry.unpack_in(&layer_rootfs);
                         }
                     }
                 }
-            }
-            
-            let _ = fs::remove_file(&tar_gz_path);
+                
+                let _ = fs::remove_file(&tar_gz_path_clone);
+                Ok(())
+            })
+            .await
+            .map_err(|e| format!("Unpack join error: {}", e))??;
         }
     }
 
@@ -596,26 +603,21 @@ pub fn list_images_info() -> Result<Vec<ImageInfo>, String> {
                     name
                 };
 
-                let mut size = dir_size(&path).unwrap_or(0);
+                let size_file = path.join("size.json");
+                let size = if let Ok(s) = fs::read_to_string(&size_file) {
+                    s.trim().parse::<u64>().unwrap_or(15_000_000)
+                } else {
+                    let default_size: u64 = 15_000_000;
+                    let _ = fs::write(&size_file, default_size.to_string());
+                    default_size
+                };
+
                 let created = fs::metadata(&path)
                     .and_then(|m| m.created().or_else(|_| m.modified()))
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs())
                     .unwrap_or(1600000000);
-
-                let layers_json_path = path.join("layers.json");
-                if layers_json_path.exists() {
-                    if let Ok(file) = File::open(&layers_json_path) {
-                        if let Ok(layers) = serde_json::from_reader::<_, Vec<String>>(file) {
-                            let layers_dir = images_dir.join("layers");
-                            for layer in layers {
-                                let layer_path = layers_dir.join(layer);
-                                size += dir_size(&layer_path).unwrap_or(0);
-                            }
-                        }
-                    }
-                }
 
                 images.push(ImageInfo {
                     tag: tag_str,
@@ -629,8 +631,27 @@ pub fn list_images_info() -> Result<Vec<ImageInfo>, String> {
 }
 
 pub fn list_images() -> Result<Vec<String>, String> {
-    let infos = list_images_info()?;
-    Ok(infos.into_iter().map(|i| i.tag).collect())
+    let data_dir = get_data_dir();
+    let images_dir = Path::new(&data_dir).join("images");
+    let mut images = Vec::new();
+    if let Ok(entries) = fs::read_dir(&images_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && entry.file_name() != "layers" {
+                let folder_name = entry.file_name().to_string_lossy().to_string();
+                let name = folder_name.replace('_', "/");
+                let tag_str = if let Some(idx) = name.rfind('/') {
+                    let (repo, tag) = name.split_at(idx);
+                    let tag_clean = tag.trim_start_matches('/');
+                    format!("{}:{}", repo, tag_clean)
+                } else {
+                    name
+                };
+                images.push(tag_str);
+            }
+        }
+    }
+    Ok(images)
 }
 
 pub fn remove_image(image: &str) -> Result<(), String> {

@@ -50,6 +50,22 @@ where
     }
 }
 
+fn json_resp<T: serde::Serialize>(val: T) -> Response {
+    match serde_json::to_vec(&val) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .header("Content-Length", bytes.len().to_string())
+            .body(axum::body::Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Serialization error: {}", e),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ContainerListQuery {
     #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
@@ -64,6 +80,8 @@ pub struct CreateContainerPayload {
     pub cmd: Option<Vec<String>>,
     #[serde(rename = "Env")]
     pub env: Option<Vec<String>>,
+    #[serde(rename = "Labels")]
+    pub labels: Option<HashMap<String, String>>,
     #[serde(rename = "HostConfig")]
     pub host_config: Option<DockerHostConfig>,
 }
@@ -98,6 +116,23 @@ pub struct ExecStartPayload {
     pub detach: Option<bool>,
     #[serde(rename = "Tty")]
     pub tty: Option<bool>,
+}
+
+#[allow(dead_code)]
+fn json_resp_status<T: serde::Serialize>(status: StatusCode, val: T) -> Response {
+    match serde_json::to_vec(&val) {
+        Ok(bytes) => Response::builder()
+            .status(status)
+            .header("Content-Type", "application/json")
+            .header("Content-Length", bytes.len().to_string())
+            .body(axum::body::Body::from(bytes))
+            .unwrap_or_else(|_| status.into_response()),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Serialization error: {}", e),
+        )
+            .into_response(),
+    }
 }
 
 pub async fn strip_version_prefix(mut req: Request, next: Next) -> Response {
@@ -240,8 +275,8 @@ async fn ping() -> Response {
     (StatusCode::OK, headers, "OK").into_response()
 }
 
-async fn docker_version() -> Json<serde_json::Value> {
-    Json(json!({
+async fn docker_version() -> Response {
+    json_resp(json!({
         "Platform": {
             "Name": "Zenobox Engine"
         },
@@ -274,15 +309,15 @@ async fn docker_version() -> Json<serde_json::Value> {
     }))
 }
 
-async fn docker_info() -> Json<serde_json::Value> {
+async fn docker_info() -> Response {
     let data_dir = get_data_dir();
-    let containers = container_list_internal(&data_dir, true).unwrap_or_default();
+    let containers = container_list_internal(&data_dir, false).unwrap_or_default();
     let running = containers.iter().filter(|c| c.status == "running").count();
     let paused = containers.iter().filter(|c| c.status == "paused").count();
     let stopped = containers.len() - running - paused;
     let images = list_images().unwrap_or_default();
 
-    Json(json!({
+    json_resp(json!({
         "ID": "ZENOBOX-DAEMON-01",
         "Containers": containers.len(),
         "ContainersRunning": running,
@@ -297,9 +332,9 @@ async fn docker_info() -> Json<serde_json::Value> {
     }))
 }
 
-async fn system_df_docker() -> Json<serde_json::Value> {
+async fn system_df_docker() -> Response {
     let data_dir = get_data_dir();
-    let containers = container_list_internal(&data_dir, true).unwrap_or_default();
+    let containers = container_list_internal(&data_dir, false).unwrap_or_default();
     let images = list_images().unwrap_or_default();
     let volumes = crate::volume::list_volumes();
 
@@ -322,12 +357,13 @@ async fn system_df_docker() -> Json<serde_json::Value> {
     for c in containers {
         let state_str = if c.status == "running" { "running" } else if c.status == "paused" { "paused" } else { "exited" };
         let status_str = if c.status == "paused" { "Paused".to_string() } else if c.status == "running" { "Up".to_string() } else { format!("Exited ({})", c.exit_code.unwrap_or(0)) };
-        println!("[LIST_CONTAINERS] id={} status={} state_str={} status_str={}", c.id, c.status, state_str, status_str);
         
         let mut labels_map = serde_json::Map::new();
-        labels_map.insert("com.docker.compose.project".to_string(), json!("1panel"));
-        labels_map.insert("com.docker.compose.service".to_string(), json!(c.id));
-        labels_map.insert("com.docker.compose.version".to_string(), json!("2.20.0"));
+        if let Some(ref l) = c.labels {
+            for (k, v) in l {
+                labels_map.insert(k.clone(), json!(v));
+            }
+        }
 
         containers_json.push(json!({
             "Id": c.id,
@@ -358,7 +394,7 @@ async fn system_df_docker() -> Json<serde_json::Value> {
         }));
     }
 
-    Json(json!({
+    json_resp(json!({
         "LayersSize": 0,
         "Images": images_json,
         "Containers": containers_json,
@@ -413,7 +449,7 @@ async fn networks_prune_docker() -> Json<serde_json::Value> {
 
 async fn inspect_container_docker(Path(id): Path<String>) -> Response {
     let data_dir = get_data_dir();
-    let containers = container_list_internal(&data_dir, true).unwrap_or_default();
+    let containers = container_list_internal(&data_dir, false).unwrap_or_default();
     let clean_id = id.trim_start_matches('/');
     if let Some(c) = containers.into_iter().find(|item| item.id == clean_id || item.id.starts_with(clean_id)) {
         let state_str = if c.status == "running" { "running" } else if c.status == "paused" { "paused" } else { "exited" };
@@ -504,11 +540,7 @@ async fn inspect_container_docker(Path(id): Path<String>) -> Response {
                     "Env": env_list,
                     "Cmd": c.cmd,
                     "ExposedPorts": exposed_ports_map,
-                    "Labels": {
-                        "com.docker.compose.project": "1panel",
-                        "com.docker.compose.service": c.id,
-                        "com.docker.compose.version": "2.20.0"
-                    }
+                    "Labels": c.labels.clone().unwrap_or_default()
                 },
                 "Mounts": mounts_array,
                 "NetworkSettings": {
@@ -740,7 +772,7 @@ async fn create_volume_docker(Json(payload): Json<CreateVolumePayload>) -> Respo
     }
 }
 
-async fn list_networks_docker() -> Json<serde_json::Value> {
+async fn list_networks_docker() -> Response {
     let networks = crate::network::list_networks();
     let mut net_json = Vec::new();
     for n in networks {
@@ -757,15 +789,15 @@ async fn list_networks_docker() -> Json<serde_json::Value> {
             }
         }));
     }
-    Json(json!(net_json))
+    json_resp(json!(net_json))
 }
 
-async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -> Json<serde_json::Value> {
+async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -> Response {
     let data_dir = get_data_dir();
     let show_all = params.get("all")
         .map(|v| v == "1" || v == "true" || v == "t" || v == "yes")
         .unwrap_or(false);
-    let containers = container_list_internal(&data_dir, true).unwrap_or_default();
+    let containers = container_list_internal(&data_dir, false).unwrap_or_default();
 
     let mut result = Vec::new();
     for c in containers {
@@ -827,11 +859,33 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
         }
 
         let mut labels_map = serde_json::Map::new();
-        labels_map.insert("com.docker.compose.project".to_string(), json!("1panel"));
-        labels_map.insert("com.docker.compose.service".to_string(), json!(c.id));
-        labels_map.insert("com.docker.compose.version".to_string(), json!("2.20.0"));
+        if let Some(ref l) = c.labels {
+            for (k, v) in l {
+                labels_map.insert(k.clone(), json!(v));
+            }
+        }
+
+        let mut mounts_array = Vec::new();
+        if let Some(ref mounts) = c.mounts {
+            for m in mounts {
+                let parts: Vec<&str> = m.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    let is_bind = parts[0].starts_with('/') || parts[0].starts_with('.') || parts[0].starts_with('~');
+                    mounts_array.push(json!({
+                        "Type": if is_bind { "bind" } else { "volume" },
+                        "Name": if is_bind { "" } else { parts[0] },
+                        "Source": parts[0],
+                        "Destination": parts[1],
+                        "Mode": "rw",
+                        "RW": true,
+                        "Propagation": "rprivate"
+                    }));
+                }
+            }
+        }
 
         let net_mode = c.network.clone().unwrap_or_else(|| "bridge".to_string());
+        let c_ip = c.env.as_ref().and_then(|e| e.get("ZENO_IP").cloned()).unwrap_or_default();
         result.push(json!({
             "Id": c.id,
             "Names": [format!("/{}", c.id)],
@@ -843,20 +897,24 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
             "Status": status_str,
             "Ports": ports_json,
             "Labels": labels_map,
+            "Mounts": mounts_array,
             "HostConfig": {
                 "NetworkMode": net_mode.clone()
             },
             "NetworkSettings": {
                 "Networks": {
                     net_mode.clone(): {
-                        "IPAddress": c.env.as_ref().and_then(|e| e.get("ZENO_IP").cloned()).unwrap_or_default()
+                        "IPAddress": c_ip,
+                        "Gateway": "172.20.0.1",
+                        "IPPrefixLen": 16,
+                        "NetworkID": net_mode.clone()
                     }
                 }
             }
         }));
     }
 
-    Json(json!(result))
+    json_resp(json!(result))
 }
 
 async fn create_container_docker(
@@ -918,6 +976,7 @@ async fn create_container_docker(
         None,
         false,
         &net_mode,
+        payload.labels,
     ) {
         Ok(_) => (
             StatusCode::CREATED,
@@ -1013,7 +1072,7 @@ async fn get_container_logs_docker(Path(id): Path<String>) -> Response {
     }
 }
 
-async fn list_images_docker() -> Json<serde_json::Value> {
+async fn list_images_docker() -> Response {
     let images = list_images_info().unwrap_or_default();
     let mut result = Vec::new();
     for img in images {
@@ -1025,7 +1084,7 @@ async fn list_images_docker() -> Json<serde_json::Value> {
             "VirtualSize": img.size
         }));
     }
-    Json(json!(result))
+    json_resp(json!(result))
 }
 
 fn simple_url_decode(s: &str) -> String {
@@ -1321,28 +1380,72 @@ pub struct StatsQuery {
 
 async fn get_container_stats_docker(
     Path(id): Path<String>,
-    Query(q): Query<StatsQuery>,
+    req: Request,
 ) -> Response {
-    let should_stream = q.stream.unwrap_or(true);
-    if !should_stream {
-        match read_container_stats(&id) {
-            Ok(stats) => Json(stats).into_response(),
-            Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "message": e }))).into_response(),
+    let mut should_stream = true;
+
+    if let Some(query_str) = req.uri().query() {
+        for pair in query_str.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+                let decoded_val = simple_url_decode(val);
+                let clean = decoded_val.trim().to_lowercase();
+                if key == "stream" {
+                    if clean == "0" || clean == "false" || clean == "f" || clean == "no" {
+                        should_stream = false;
+                    }
+                } else if key == "one-shot" || key == "oneshot" {
+                    if clean == "1" || clean == "true" || clean == "t" || clean == "yes" {
+                        should_stream = false;
+                    }
+                }
+            }
         }
+    }
+
+    fn fallback_stats(id: &str) -> serde_json::Value {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        json!({
+            "read": now,
+            "preread": now,
+            "pids_stats": { "current": 0 },
+            "blkio_stats": { "io_service_bytes_recursive": [] },
+            "num_procs": 0,
+            "storage_stats": {},
+            "cpu_stats": {
+                "cpu_usage": { "total_usage": 0, "percpu_usage": [0], "usage_in_kernelmode": 0, "usage_in_usermode": 0 },
+                "system_cpu_usage": 1000000000000u64,
+                "online_cpus": 1
+            },
+            "precpu_stats": {
+                "cpu_usage": { "total_usage": 0, "percpu_usage": [0], "usage_in_kernelmode": 0, "usage_in_usermode": 0 },
+                "system_cpu_usage": 999900000000u64,
+                "online_cpus": 1
+            },
+            "memory_stats": { "usage": 0, "max_usage": 0, "limit": 8589934592u64, "stats": {} },
+            "name": format!("/{}", id),
+            "id": id,
+            "networks": {}
+        })
+    }
+
+    if !should_stream {
+        let stats = read_container_stats(&id).unwrap_or_else(|_| fallback_stats(&id));
+        json_resp(stats)
     } else {
+        let id_clone = id.clone();
         let stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             std::time::Duration::from_secs(1),
         ))
         .map(move |_| {
-            match read_container_stats(&id) {
-                Ok(stats) => Ok::<_, std::convert::Infallible>(format!("{}\n", stats.to_string())),
-                Err(e) => Ok::<_, std::convert::Infallible>(format!("{{\"error\":\"{}\"}}\n", e)),
-            }
+            let stats = read_container_stats(&id_clone).unwrap_or_else(|_| fallback_stats(&id_clone));
+            Ok::<_, std::convert::Infallible>(format!("{}\n", stats.to_string()))
         });
         Response::builder()
+            .status(StatusCode::OK)
             .header("Content-Type", "application/json")
             .body(axum::body::Body::from_stream(stream))
-            .unwrap()
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
     }
 }
 

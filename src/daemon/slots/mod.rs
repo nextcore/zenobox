@@ -84,6 +84,7 @@ fn register_box_create(engine: &mut Engine) {
                 None,
                 false,
                 "bridge",
+                None,
             );
             
             let mut map = HashMap::new();

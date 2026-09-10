@@ -51,6 +51,11 @@ pub fn container_list_internal(data_dir: &str, auto_restart: bool) -> Result<Vec
             if entry.path().is_dir() {
                 let id = entry.file_name().to_string_lossy().to_string();
                 if let Ok(mut state) = load_container_state(&id) {
+                    if state.pid > 0 && Path::new(&format!("/proc/{}", state.pid)).exists() {
+                        state.status = "running".to_string();
+                        list.push(state);
+                        continue;
+                    }
                     let output = runc_exec(&["state", &id]);
                     if let Ok(out) = output {
                         if out.status.success() {
@@ -407,6 +412,7 @@ pub fn container_create(
     oom_score_adj: Option<i32>,
     read_only: bool,
     network: &str,
+    labels: Option<HashMap<String, String>>,
 ) -> Result<(), String> {
     let data_dir = get_data_dir();
     let state_p = state_file(&data_dir, id);
@@ -525,6 +531,7 @@ pub fn container_create(
         oom_score_adj,
         read_only: Some(read_only),
         network: Some(network.to_string()),
+        labels,
     };
 
     save_container_state(&state)?;

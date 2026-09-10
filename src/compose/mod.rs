@@ -780,6 +780,10 @@ pub fn compose_up(path: &str) -> Result<String, String> {
             "bridge"
         };
 
+        let mut compose_labels = HashMap::new();
+        compose_labels.insert("com.docker.compose.project".to_string(), project_name.clone());
+        compose_labels.insert("com.docker.compose.service".to_string(), name.clone());
+
         output.push_str(&format!("  ▶ Creating container '{}'...\n", container_name));
         let is_host_net = svc.network_mode.as_deref() == Some("host") || network_name == "host";
         container_create(
@@ -797,6 +801,7 @@ pub fn compose_up(path: &str) -> Result<String, String> {
             svc.oom_score_adj,
             read_only,
             network_name,
+            Some(compose_labels),
         )?;
 
         if let Err(e) = inject_hosts_entries(&data_dir, &container_name, &cf.services, &name) {
