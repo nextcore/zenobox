@@ -15,7 +15,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::container::{
     container_create, container_delete, container_exec, container_list_internal, container_logs,
@@ -1211,127 +1210,81 @@ async fn start_exec_docker(
 }
 
 async fn handle_tcp_hijack_exec(req: Request, container_id: String, cmd: Vec<String>) -> Response {
-    let upgraded_fut = hyper::upgrade::on(req);
-    tokio::spawn(run_pty_bridge(upgraded_fut, container_id, cmd));
-
-    Response::builder()
-        .status(StatusCode::SWITCHING_PROTOCOLS)
-        .header("Content-Type", "application/vnd.docker.raw-stream")
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "tcp")
-        .body(axum::body::Body::empty())
-        .unwrap()
-}
-
-async fn run_pty_bridge(
-    on_upgrade: hyper::upgrade::OnUpgrade,
-    container_id: String,
-    cmd: Vec<String>,
-) {
-    // Wait for the TCP connection to be upgraded (resolves after 101 is sent)
-    let upgraded = match on_upgrade.await {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("[zenobox] TCP hijack upgrade error: {}", e);
-            return;
-        }
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": format!("PTY error: {}", e) }))).into_response(),
     };
 
-        let io = tokio::io::BufStream::new(hyper_util::rt::TokioIo::new(upgraded));
-        let (mut tcp_reader, mut tcp_writer) = tokio::io::split(io);
+    let runc_bin = get_runc_bin();
+    let root_path = format!("{}/runc", get_data_dir());
+    let mut cmd_builder = CommandBuilder::new(&runc_bin);
+    cmd_builder.arg("--root");
+    cmd_builder.arg(&root_path);
+    cmd_builder.arg("exec");
+    cmd_builder.arg("-t");
+    cmd_builder.arg(&container_id);
+    for c in &cmd {
+        cmd_builder.arg(c);
+    }
 
-        let pty_system = native_pty_system();
-        let pair = match pty_system.openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = tcp_writer.write_all(format!("PTY error: {}\r\n", e).as_bytes()).await;
-                return;
+    let mut child = match pair.slave.spawn_command(cmd_builder) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": format!("Exec error: {}", e) }))).into_response(),
+    };
+    drop(pair.slave);
+
+    let mut pty_reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": format!("Reader error: {}", e) }))).into_response(),
+    };
+    let mut pty_writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": format!("Writer error: {}", e) }))).into_response(),
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::convert::Infallible>>(100);
+
+    // Thread reading PTY output -> HTTP Response Body Stream
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match pty_reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.blocking_send(Ok(axum::body::Bytes::from(buf[..n].to_vec()))).is_err() {
+                        break;
+                    }
+                }
             }
-        };
-
-        let runc_bin = get_runc_bin();
-        let root_path = format!("{}/runc", get_data_dir());
-        let mut cmd_builder = CommandBuilder::new(&runc_bin);
-        cmd_builder.arg("--root");
-        cmd_builder.arg(&root_path);
-        cmd_builder.arg("exec");
-        cmd_builder.arg("-t");
-        cmd_builder.arg(&container_id);
-        for c in &cmd {
-            cmd_builder.arg(c);
         }
-
-        let mut child = match pair.slave.spawn_command(cmd_builder) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tcp_writer.write_all(format!("Exec error: {}\r\n", e).as_bytes()).await;
-                return;
-            }
-        };
-        drop(pair.slave);
-
-        let mut pty_reader = match pair.master.try_clone_reader() {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        let mut pty_writer = match pair.master.take_writer() {
-            Ok(w) => w,
-            Err(_) => return,
-        };
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
-
-        // Thread: read PTY output and send to channel
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match pty_reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        // Task: forward PTY output to TCP as raw stream (Tty=true, no multiplex framing)
-        let write_task = tokio::spawn(async move {
-            while let Some(data) = rx.recv().await {
-                if tcp_writer.write_all(&data).await.is_err() {
-                    break;
-                }
-                let _ = tcp_writer.flush().await;
-            }
-        });
-
-        // Task: read from TCP (stdin from client) and write to PTY
-        let read_task = tokio::spawn(async move {
-            let mut buf = [0u8; 4096];
-            loop {
-                match tcp_reader.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if pty_writer.write_all(&buf[..n]).is_err() {
-                            break;
-                        }
-                        let _ = pty_writer.flush();
-                    }
-                }
-            }
-        });
-
-        let _ = tokio::select! {
-            _ = write_task => {},
-            _ = read_task => {},
-        };
         let _ = child.kill();
+    });
+
+    // Task reading HTTP Request Body Stream (Stdin) -> PTY writer
+    let mut body_stream = axum::body::Body::into_data_stream(req.into_body());
+    tokio::spawn(async move {
+        while let Some(Ok(chunk)) = body_stream.next().await {
+            if pty_writer.write_all(&chunk).is_err() {
+                break;
+            }
+            let _ = pty_writer.flush();
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = axum::body::Body::from_stream(stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/vnd.docker.raw-stream")
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn inspect_exec_docker(Path(_exec_id): Path<String>) -> Json<serde_json::Value> {

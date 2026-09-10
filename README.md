@@ -154,8 +154,8 @@ Zenobox is designed to run efficiently even on low-spec VPS instances ($2/mo VPS
 2. **❌ Multi-Host Clustering (`docker swarm`)**
    - **Why**: Zenobox targets single-node Linux servers, VPS instances, edge devices, and panel backends.
    - **Workflow**: For single-host multi-container stacks, use `zenobox compose` or native REST API.
-3. **✅ 1Panel AppStore & Container Management**
-   - **Status**: 1Panel App Store installations, image pulling, Compose lifecycle (`start`, `stop`, `restart`), container **Pause / Resume**, stats streaming, and terminal exec work **100% smoothly** in Zenobox `v0.2.7`.
+3. **✅ 1Panel AppStore & Web UI Terminal Management**
+   - **Status**: 1Panel App Store installations, image pulling, Compose lifecycle (`start`, `stop`, `restart`), container **Pause / Resume**, stats streaming, and **Web UI Terminal Exec (`/bin/sh`)** work **100% smoothly** in Zenobox `v0.2.8`.
 
 ---
 

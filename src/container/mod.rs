@@ -794,17 +794,101 @@ pub fn container_logs(id: &str) -> Result<String, String> {
     }
 }
 
-pub fn container_exec(id: &str, cmd: &[&str]) -> Result<String, String> {
-    let mut runc_args = vec!["exec", id];
-    runc_args.extend_from_slice(cmd);
-    let output = runc_exec(&runc_args).map_err(|e| format!("Exec process failed: {}", e))?;
+pub fn container_exec_full(
+    id: &str,
+    cmd: &[&str],
+    user: Option<&str>,
+    workdir: Option<&str>,
+    env: &[String],
+) -> Result<String, String> {
+    let runc_bin = get_runc_bin();
+    let root = format!("{}/runc", get_data_dir());
+    let mut all_args = vec!["--root", &root, "exec"];
+
+    if let Some(u) = user {
+        if !u.is_empty() {
+            all_args.push("-u");
+            all_args.push(u);
+        }
+    }
+    if let Some(w) = workdir {
+        if !w.is_empty() {
+            all_args.push("-w");
+            all_args.push(w);
+        }
+    }
+    for e in env {
+        all_args.push("-e");
+        all_args.push(e);
+    }
+
+    all_args.push(id);
+    all_args.extend_from_slice(cmd);
+
+    let output = Command::new(&runc_bin)
+        .args(&all_args)
+        .output()
+        .map_err(|e| format!("Exec process failed: {}", e))?;
+
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         let err = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(if err.is_empty() { "Exec returned non-zero exit code".to_string() } else { err })
+        Err(if err.is_empty() {
+            "Exec returned non-zero exit code".to_string()
+        } else {
+            err
+        })
     }
 }
+
+pub fn container_exec_interactive(
+    id: &str,
+    cmd: &[&str],
+    user: Option<&str>,
+    workdir: Option<&str>,
+    env: &[String],
+    tty: bool,
+) -> Result<i32, String> {
+    let runc_bin = get_runc_bin();
+    let root = format!("{}/runc", get_data_dir());
+    let mut all_args = vec!["--root", &root, "exec"];
+
+    if tty {
+        all_args.push("-t");
+    }
+    if let Some(u) = user {
+        if !u.is_empty() {
+            all_args.push("-u");
+            all_args.push(u);
+        }
+    }
+    if let Some(w) = workdir {
+        if !w.is_empty() {
+            all_args.push("-w");
+            all_args.push(w);
+        }
+    }
+    for e in env {
+        all_args.push("-e");
+        all_args.push(e);
+    }
+
+    all_args.push(id);
+    all_args.extend_from_slice(cmd);
+
+    let status = Command::new(&runc_bin)
+        .args(&all_args)
+        .status()
+        .map_err(|e| format!("Exec process failed: {}", e))?;
+
+    Ok(status.code().unwrap_or(0))
+}
+
+pub fn container_exec(id: &str, cmd: &[&str]) -> Result<String, String> {
+    container_exec_full(id, cmd, None, None, &[])
+}
+
 
 pub fn read_container_stats(id: &str) -> Result<serde_json::Value, String> {
     let state = load_container_state(id)?;

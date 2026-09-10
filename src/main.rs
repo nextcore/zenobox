@@ -4,7 +4,7 @@ use std::collections::HashMap;
 #[derive(Parser)]
 #[command(name = "zenobox")]
 #[command(author = "NextCore <github.com/nextcore>")]
-#[command(version = "0.2.7")]
+#[command(version = "0.2.8")]
 #[command(about = "Lightweight OCI Container Runtime & Docker Alternative in Rust", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -120,6 +120,18 @@ enum Commands {
         #[arg(short = 't', long = "tty")]
         tty: bool,
 
+        /// Username or UID (format: <name|uid>[:<group|gid>])
+        #[arg(short = 'u', long = "user")]
+        user: Option<String>,
+
+        /// Working directory inside the container
+        #[arg(short = 'w', long = "workdir")]
+        workdir: Option<String>,
+
+        /// Set environment variables
+        #[arg(short = 'e', long = "env")]
+        env: Vec<String>,
+
         /// Container ID or name
         container: String,
 
@@ -127,6 +139,7 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
+
     /// Manage OCI images
     Image {
         #[command(subcommand)]
@@ -667,14 +680,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => eprintln!("❌ Error fetching logs: {}", e),
             }
         }
-        Commands::Exec { interactive: _, tty: _, container, command } => {
+        Commands::Exec { interactive, tty, user, workdir, env, container, command } => {
             let cmd_strings = if command.is_empty() { vec!["/bin/sh".to_string()] } else { command };
             let cmd_refs: Vec<&str> = cmd_strings.iter().map(|s| s.as_str()).collect();
-            match zenobox::container_exec(&container, &cmd_refs) {
-                Ok(output) => print!("{}", output),
-                Err(e) => eprintln!("❌ Exec error: {}", e),
+
+            if interactive || tty {
+                if let Err(e) = zenobox::container_exec_interactive(&container, &cmd_refs, user.as_deref(), workdir.as_deref(), &env, tty || interactive) {
+                    eprintln!("❌ Exec error: {}", e);
+                }
+            } else {
+                match zenobox::container_exec_full(&container, &cmd_refs, user.as_deref(), workdir.as_deref(), &env) {
+                    Ok(output) => print!("{}", output),
+                    Err(e) => eprintln!("❌ Exec error: {}", e),
+                }
             }
         }
+
         Commands::Image { command } => match command {
             ImageCommands::Ls => {
                 let images = zenobox::list_images()?;

@@ -3,4 +3,6 @@
 /test_install
 /data
 *.tar.gz
+/ref
+
 
