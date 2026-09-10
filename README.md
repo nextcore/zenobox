@@ -147,7 +147,7 @@ Zenobox is designed to run efficiently even on low-spec VPS instances ($2/mo VPS
 
 | Process | Memory Footprint (RSS) | Memory Reduction |
 | :--- | :--- | :--- |
-| **Zenobox Daemon (`zenobox daemon`)** | **~8.4 MB - 10 MB RAM** | **~90% - 95% Less Memory** |
+| **Zenobox Daemon (`zenobox daemon`)** | **~4.8 MB - 6.8 MB RAM (Peak ~17MB)** | **~95% - 98% Less Memory** |
 | **Docker Engine (`dockerd` + `containerd`)** | **~150 MB - 250 MB RAM** | Standard Baseline |
 
 ---
