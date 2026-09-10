@@ -335,21 +335,32 @@ async fn docker_info() -> Response {
 async fn system_df_docker() -> Response {
     let data_dir = get_data_dir();
     let containers = container_list_internal(&data_dir, false).unwrap_or_default();
-    let images = list_images().unwrap_or_default();
+    let images = list_images_info().unwrap_or_default();
     let volumes = crate::volume::list_volumes();
 
     let mut images_json = Vec::new();
     for img in images {
+        let repo_tags = vec![img.tag.clone()];
+
+        let mut cont_count = 0;
+        for c in &containers {
+            let img_ref = crate::utils::parse_image_ref(&c.image);
+            let normalized_c_image = format!("{}:{}", img_ref.repository, img_ref.tag);
+            if c.image == img.tag || normalized_c_image == img.tag || c.image.contains(&img.tag) || img.tag.contains(&c.image) {
+                cont_count += 1;
+            }
+        }
+
         images_json.push(json!({
-            "Id": format!("sha256:{}", hex::encode(img.as_bytes())),
+            "Id": format!("sha256:{}", hex::encode(img.tag.as_bytes())),
             "ParentId": "",
-            "RepoTags": [img],
+            "RepoTags": repo_tags,
             "RepoDigests": [],
-            "Created": 1600000000,
-            "Size": 15000000u64,
+            "Created": img.created,
+            "Size": img.size,
             "SharedSize": 0,
-            "VirtualSize": 15000000u64,
-            "Containers": 1
+            "VirtualSize": img.size,
+            "Containers": cont_count
         }));
     }
 
@@ -612,14 +623,26 @@ async fn inspect_image_docker_3(Path((domain, org, name)): Path<(String, String,
 }
 
 async fn delete_image_docker(Path(name): Path<String>) -> Response {
-    let _ = crate::image::remove_image(&name);
-    (
-        StatusCode::OK,
-        Json(json!([
-            { "Untagged": name },
-            { "Deleted": format!("sha256:{}", hex::encode(name.as_bytes())) }
-        ])),
-    ).into_response()
+    let decoded_name = simple_url_decode(&name);
+    match crate::image::remove_image(&decoded_name) {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!([
+                { "Untagged": decoded_name },
+                { "Deleted": format!("sha256:{}", hex::encode(decoded_name.as_bytes())) }
+            ])),
+        ).into_response(),
+        Err(err_msg) => {
+            let status = if err_msg.contains("conflict:") {
+                StatusCode::CONFLICT
+            } else if err_msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(json!({ "message": err_msg }))).into_response()
+        }
+    }
 }
 
 async fn delete_image_docker_2(Path((org, name)): Path<(String, String)>) -> Response {
@@ -886,11 +909,16 @@ async fn list_containers_docker(Query(params): Query<HashMap<String, String>>) -
 
         let net_mode = c.network.clone().unwrap_or_else(|| "bridge".to_string());
         let c_ip = c.env.as_ref().and_then(|e| e.get("ZENO_IP").cloned()).unwrap_or_default();
+        
+        let img_ref = crate::utils::parse_image_ref(&c.image);
+        let normalized_c_image = format!("{}:{}", img_ref.repository, img_ref.tag);
+        let c_img_id = format!("sha256:{}", hex::encode(normalized_c_image.as_bytes()));
+
         result.push(json!({
             "Id": c.id,
             "Names": [format!("/{}", c.id)],
-            "Image": c.image,
-            "ImageID": format!("sha256:{}", hex::encode(c.image.as_bytes())),
+            "Image": normalized_c_image,
+            "ImageID": c_img_id,
             "Command": c.cmd.first().cloned().unwrap_or_else(|| "sh".to_string()),
             "Created": created_ts,
             "State": state_str,

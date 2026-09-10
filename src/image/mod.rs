@@ -337,6 +337,19 @@ pub async fn pull_image(image: &str) -> Result<Vec<String>, String> {
         serde_json::to_string_pretty(&image_config_json).unwrap()
     ).map_err(|e| e.to_string())?;
 
+    let mut total_bytes: u64 = 0;
+    let layers_base = Path::new(&layers_cache_dir);
+    for dig in &layer_digests {
+        let l_rootfs = layers_base.join(dig).join("rootfs");
+        if let Ok(sz) = dir_size(&l_rootfs) {
+            total_bytes += sz;
+        }
+    }
+    if total_bytes == 0 {
+        total_bytes = 15_000_000;
+    }
+    let _ = fs::write(format!("{}/size.json", image_cache_dir), total_bytes.to_string());
+
     let mut final_cmd = Vec::new();
     if let Some(entrypoint) = image_config_json.get("config").and_then(|c| c.get("Entrypoint")).and_then(|e| e.as_array()) {
         for val in entrypoint {
@@ -605,11 +618,47 @@ pub fn list_images_info() -> Result<Vec<ImageInfo>, String> {
 
                 let size_file = path.join("size.json");
                 let size = if let Ok(s) = fs::read_to_string(&size_file) {
-                    s.trim().parse::<u64>().unwrap_or(15_000_000)
+                    s.trim().parse::<u64>().unwrap_or_else(|_| {
+                        let layers_json_path = path.join("layers.json");
+                        let mut real_size: u64 = 0;
+                        if layers_json_path.exists() {
+                            if let Ok(file) = File::open(&layers_json_path) {
+                                if let Ok(layers) = serde_json::from_reader::<_, Vec<String>>(file) {
+                                    let layers_dir = Path::new(&data_dir).join("images").join("layers");
+                                    for layer in layers {
+                                        if let Ok(sz) = dir_size(layers_dir.join(&layer).join("rootfs")) {
+                                            real_size += sz;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if real_size == 0 {
+                            real_size = dir_size(&path).unwrap_or(15_000_000);
+                        }
+                        let _ = fs::write(&size_file, real_size.to_string());
+                        real_size
+                    })
                 } else {
-                    let default_size: u64 = 15_000_000;
-                    let _ = fs::write(&size_file, default_size.to_string());
-                    default_size
+                    let layers_json_path = path.join("layers.json");
+                    let mut real_size: u64 = 0;
+                    if layers_json_path.exists() {
+                        if let Ok(file) = File::open(&layers_json_path) {
+                            if let Ok(layers) = serde_json::from_reader::<_, Vec<String>>(file) {
+                                let layers_dir = Path::new(&data_dir).join("images").join("layers");
+                                for layer in layers {
+                                    if let Ok(sz) = dir_size(layers_dir.join(&layer).join("rootfs")) {
+                                        real_size += sz;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if real_size == 0 {
+                        real_size = dir_size(&path).unwrap_or(15_000_000);
+                    }
+                    let _ = fs::write(&size_file, real_size.to_string());
+                    real_size
                 };
 
                 let created = fs::metadata(&path)
@@ -660,6 +709,36 @@ pub fn remove_image(image: &str) -> Result<(), String> {
 
     if !images_dir.exists() {
         return Err(format!("Image '{}' not found", image));
+    }
+
+    let clean_img = image.trim_start_matches("sha256:");
+    let input_ref = parse_image_ref(image);
+    let input_canonical = format!("{}:{}", input_ref.repository, input_ref.tag);
+    let input_short = format!("{}:{}", input_ref.repository.trim_start_matches("library/"), input_ref.tag);
+
+    if let Ok(containers) = crate::container::container_list_internal(&data_dir, false) {
+        for c in containers {
+            let c_ref = parse_image_ref(&c.image);
+            let c_canonical = format!("{}:{}", c_ref.repository, c_ref.tag);
+            let c_short = format!("{}:{}", c_ref.repository.trim_start_matches("library/"), c_ref.tag);
+
+            let is_match = c.image == image
+                || c_canonical == input_canonical
+                || c_short == input_short
+                || c_canonical == input_short
+                || c_short == input_canonical
+                || c.image.contains(image)
+                || image.contains(&c.image)
+                || (!clean_img.is_empty() && hex::encode(c_canonical.as_bytes()).starts_with(clean_img))
+                || (!clean_img.is_empty() && hex::encode(c_short.as_bytes()).starts_with(clean_img));
+
+            if is_match {
+                return Err(format!(
+                    "conflict: unable to remove image '{}' (must be forced) - image is being used by running/existing container '{}'",
+                    image, c.id
+                ));
+            }
+        }
     }
 
     let mut target_dir: Option<PathBuf> = None;
