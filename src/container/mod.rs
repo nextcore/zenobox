@@ -64,8 +64,12 @@ pub fn container_list_internal(data_dir: &str, auto_restart: bool) -> Result<Vec
                                 }
 
                                 if state.status != runc_status || state.pid != runc_pid {
-                                    state.status = runc_status;
-                                    state.pid = runc_pid;
+                                    if state.desired_status.as_deref() == Some("paused") && (runc_status == "stopped" || runc_status == "paused") {
+                                        state.status = "paused".to_string();
+                                    } else {
+                                        state.status = runc_status;
+                                        state.pid = runc_pid;
+                                    }
                                     let _ = save_container_state(&state);
                                 }
                             }
@@ -628,21 +632,49 @@ pub fn container_start(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn container_pause(id: &str) -> Result<(), String> {
+    let mut state = load_container_state(id)?;
+    let out = runc_exec(&["pause", &state.id]).map_err(|e| format!("runc pause failed: {}", e))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        eprintln!("[container_pause] runc pause stderr: {}", err);
+        return Err(format!("runc pause failed: {}", err));
+    }
+    state.status = "paused".to_string();
+    state.desired_status = Some("paused".to_string());
+    save_container_state(&state)?;
+    Ok(())
+}
+
+pub fn container_unpause(id: &str) -> Result<(), String> {
+    let mut state = load_container_state(id)?;
+    let res = runc_exec(&["resume", &state.id]);
+    let success = res.as_ref().map(|o| o.status.success()).unwrap_or(false);
+    if !success {
+        let _ = container_start(&state.id);
+    } else {
+        state.status = "running".to_string();
+        state.desired_status = Some("running".to_string());
+        save_container_state(&state)?;
+    }
+    Ok(())
+}
+
 pub fn container_stop(id: &str) -> Result<(), String> {
     let data_dir = get_data_dir();
     let mut state = load_container_state(id)?;
-    if state.status != "running" {
+    if state.status != "running" && state.status != "paused" {
         return Ok(());
     }
 
-    let kill_term = runc_exec(&["kill", id, "SIGTERM"]);
+    let kill_term = runc_exec(&["kill", &state.id, "SIGTERM"]);
     if kill_term.is_err() || !kill_term.unwrap().status.success() {
-        let _ = runc_exec(&["kill", id, "SIGKILL"]);
+        let _ = runc_exec(&["kill", &state.id, "SIGKILL"]);
     }
 
     let ip = state.env.as_ref().and_then(|e| e.get("ZENO_IP").cloned()).unwrap_or_default();
     let ports = state.ports.clone().unwrap_or_default();
-    clean_container_network(id, &ip, &ports);
+    clean_container_network(&state.id, &ip, &ports);
 
     state.status = "stopped".to_string();
     state.desired_status = Some("stopped".to_string());

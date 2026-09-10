@@ -182,17 +182,27 @@ async fn get_registry_token(client: &reqwest::Client, img: &ImageRef) -> Result<
 }
 
 pub async fn pull_image(image: &str) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::new();
-    let img_ref = parse_image_ref(image);
-    let token = get_registry_token(&client, &img_ref).await?;
-
     let data_dir = get_data_dir();
+    let img_ref = parse_image_ref(image);
     let cache_dir_name = format!("{}_{}", img_ref.repository, img_ref.tag)
         .replace('/', "_")
         .replace(':', "_");
     
     let image_cache_dir = format!("{}/images/{}", data_dir, cache_dir_name);
     let layers_cache_dir = format!("{}/images/layers", data_dir);
+
+    let layers_json_p = Path::new(&image_cache_dir).join("layers.json");
+    if layers_json_p.exists() {
+        return Ok(get_image_default_cmd(image));
+    }
+
+    let client = reqwest::Client::new();
+    let token = match get_registry_token(&client, &img_ref).await {
+        Ok(t) => t,
+        Err(e) => {
+            return Err(format!("Registry token error: {}", e));
+        }
+    };
 
     fs::create_dir_all(&image_cache_dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(&layers_cache_dir).map_err(|e| e.to_string())?;
@@ -289,7 +299,22 @@ pub async fn pull_image(image: &str) -> Result<Vec<String>, String> {
             let tar_gz = File::open(&tar_gz_path).map_err(|e| e.to_string())?;
             let tar = flate2::read::GzDecoder::new(tar_gz);
             let mut archive = tar::Archive::new(tar);
-            archive.unpack(&layer_rootfs).map_err(|e| e.to_string())?;
+            archive.set_preserve_permissions(true);
+            archive.set_unpack_xattrs(false);
+
+            if let Ok(entries) = archive.entries() {
+                for entry_result in entries {
+                    if let Ok(mut entry) = entry_result {
+                        if let Ok(path) = entry.path() {
+                            let target_path = Path::new(&layer_rootfs).join(&path);
+                            if let Some(parent) = target_path.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            let _ = entry.unpack_in(&layer_rootfs);
+                        }
+                    }
+                }
+            }
             
             let _ = fs::remove_file(&tar_gz_path);
         }

@@ -102,6 +102,7 @@ pub struct ExecStartPayload {
 }
 
 pub async fn strip_version_prefix(mut req: Request, next: Next) -> Response {
+    println!("[DOCKER API] {} {}", req.method(), req.uri());
     let uri = req.uri().clone();
     let path = uri.path().to_string();
     if path.starts_with("/v1.") || path.starts_with("/v2.") {
@@ -139,6 +140,9 @@ pub fn docker_router() -> Router {
         .route("/containers/{id}/json", get(inspect_container_docker))
         .route("/containers/{id}/start", post(start_container_docker))
         .route("/containers/{id}/stop", post(stop_container_docker))
+        .route("/containers/{id}/pause", post(pause_container_docker))
+        .route("/containers/{id}/unpause", post(unpause_container_docker))
+        .route("/containers/{id}/kill", post(kill_container_docker))
         .route("/containers/{id}", delete(delete_container_docker))
         .route("/containers/{id}/logs", get(get_container_logs_docker))
         .route("/containers/{id}/stats", get(get_container_stats_docker))
@@ -154,7 +158,11 @@ pub fn docker_router() -> Router {
         .route("/images/create", post(pull_image_docker))
         .route("/images/prune", post(images_prune_docker))
         .route("/images/{name}/json", get(inspect_image_docker))
+        .route("/images/{org}/{name}/json", get(inspect_image_docker_2))
+        .route("/images/{domain}/{org}/{name}/json", get(inspect_image_docker_3))
         .route("/images/{name}", delete(delete_image_docker))
+        .route("/images/{org}/{name}", delete(delete_image_docker_2))
+        .route("/images/{domain}/{org}/{name}", delete(delete_image_docker_3))
         .route("/volumes", get(list_volumes_docker))
         .route("/volumes/json", get(list_volumes_docker))
         .route("/volumes/create", post(create_volume_docker))
@@ -184,6 +192,9 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/containers/{{id}}/json", v), get(inspect_container_docker))
             .route(&format!("/{}/containers/{{id}}/start", v), post(start_container_docker))
             .route(&format!("/{}/containers/{{id}}/stop", v), post(stop_container_docker))
+            .route(&format!("/{}/containers/{{id}}/pause", v), post(pause_container_docker))
+            .route(&format!("/{}/containers/{{id}}/unpause", v), post(unpause_container_docker))
+            .route(&format!("/{}/containers/{{id}}/kill", v), post(kill_container_docker))
             .route(&format!("/{}/containers/{{id}}", v), delete(delete_container_docker))
             .route(&format!("/{}/containers/{{id}}/logs", v), get(get_container_logs_docker))
             .route(&format!("/{}/containers/{{id}}/stats", v), get(get_container_stats_docker))
@@ -199,7 +210,11 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/images/create", v), post(pull_image_docker))
             .route(&format!("/{}/images/prune", v), post(images_prune_docker))
             .route(&format!("/{}/images/{{name}}/json", v), get(inspect_image_docker))
+            .route(&format!("/{}/images/{{org}}/{{name}}/json", v), get(inspect_image_docker_2))
+            .route(&format!("/{}/images/{{domain}}/{{org}}/{{name}}/json", v), get(inspect_image_docker_3))
             .route(&format!("/{}/images/{{name}}", v), delete(delete_image_docker))
+            .route(&format!("/{}/images/{{org}}/{{name}}", v), delete(delete_image_docker_2))
+            .route(&format!("/{}/images/{{domain}}/{{org}}/{{name}}", v), delete(delete_image_docker_3))
             .route(&format!("/{}/volumes", v), get(list_volumes_docker))
             .route(&format!("/{}/volumes/json", v), get(list_volumes_docker))
             .route(&format!("/{}/volumes/create", v), post(create_volume_docker))
@@ -215,7 +230,7 @@ pub fn docker_router() -> Router {
             .route(&format!("/{}/networks/{{id}}/disconnect", v), post(disconnect_network_docker));
     }
 
-    router.layer(middleware::from_fn(strip_version_prefix))
+    router.fallback(fallback_404).layer(middleware::from_fn(strip_version_prefix))
 }
 
 async fn ping() -> Response {
@@ -264,14 +279,15 @@ async fn docker_info() -> Json<serde_json::Value> {
     let data_dir = get_data_dir();
     let containers = container_list_internal(&data_dir, true).unwrap_or_default();
     let running = containers.iter().filter(|c| c.status == "running").count();
-    let stopped = containers.len() - running;
+    let paused = containers.iter().filter(|c| c.status == "paused").count();
+    let stopped = containers.len() - running - paused;
     let images = list_images().unwrap_or_default();
 
     Json(json!({
         "ID": "ZENOBOX-DAEMON-01",
         "Containers": containers.len(),
         "ContainersRunning": running,
-        "ContainersPaused": 0,
+        "ContainersPaused": paused,
         "ContainersStopped": stopped,
         "Images": images.len(),
         "Driver": "overlay2",
@@ -305,8 +321,14 @@ async fn system_df_docker() -> Json<serde_json::Value> {
 
     let mut containers_json = Vec::new();
     for c in containers {
-        let state_str = if c.status == "running" { "running" } else { "exited" };
-        let status_str = format!("Up ({})", c.status);
+        let state_str = if c.status == "running" { "running" } else if c.status == "paused" { "paused" } else { "exited" };
+        let status_str = if c.status == "paused" { "Paused".to_string() } else if c.status == "running" { "Up".to_string() } else { format!("Exited ({})", c.exit_code.unwrap_or(0)) };
+        
+        let mut labels_map = serde_json::Map::new();
+        labels_map.insert("com.docker.compose.project".to_string(), json!("1panel"));
+        labels_map.insert("com.docker.compose.service".to_string(), json!(c.id));
+        labels_map.insert("com.docker.compose.version".to_string(), json!("2.20.0"));
+
         containers_json.push(json!({
             "Id": c.id,
             "Names": [format!("/{}", c.id)],
@@ -316,6 +338,7 @@ async fn system_df_docker() -> Json<serde_json::Value> {
             "Created": 1600000000,
             "State": state_str,
             "Status": status_str,
+            "Labels": labels_map,
             "SizeRw": 0,
             "SizeRootFs": 10000000u64
         }));
@@ -391,8 +414,9 @@ async fn networks_prune_docker() -> Json<serde_json::Value> {
 async fn inspect_container_docker(Path(id): Path<String>) -> Response {
     let data_dir = get_data_dir();
     let containers = container_list_internal(&data_dir, true).unwrap_or_default();
-    if let Some(c) = containers.into_iter().find(|item| item.id == id || item.id.starts_with(&id)) {
-        let state_str = if c.status == "running" { "running" } else { "exited" };
+    let clean_id = id.trim_start_matches('/');
+    if let Some(c) = containers.into_iter().find(|item| item.id == clean_id || item.id.starts_with(clean_id)) {
+        let state_str = if c.status == "running" { "running" } else if c.status == "paused" { "paused" } else { "exited" };
         let created = c.created_at.as_str();
         let net_mode = c.network.clone().unwrap_or_else(|| "bridge".to_string());
 
@@ -456,8 +480,8 @@ async fn inspect_container_docker(Path(id): Path<String>) -> Response {
                 "Args": c.cmd.iter().skip(1).collect::<Vec<_>>(),
                 "State": {
                     "Status": state_str,
-                    "Running": c.status == "running",
-                    "Paused": false,
+                    "Running": c.status == "running" || c.status == "paused",
+                    "Paused": c.status == "paused",
                     "Restarting": false,
                     "OOMKilled": false,
                     "Dead": false,
@@ -480,7 +504,11 @@ async fn inspect_container_docker(Path(id): Path<String>) -> Response {
                     "Env": env_list,
                     "Cmd": c.cmd,
                     "ExposedPorts": exposed_ports_map,
-                    "Labels": {}
+                    "Labels": {
+                        "com.docker.compose.project": "1panel",
+                        "com.docker.compose.service": c.id,
+                        "com.docker.compose.version": "2.20.0"
+                    }
                 },
                 "Mounts": mounts_array,
                 "NetworkSettings": {
@@ -503,16 +531,52 @@ async fn inspect_container_docker(Path(id): Path<String>) -> Response {
     }
 }
 
-async fn inspect_image_docker(Path(name): Path<String>) -> Json<serde_json::Value> {
+async fn fallback_404() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "message": "page not found" })),
+    ).into_response()
+}
+
+fn format_inspect_image(name: &str) -> Json<serde_json::Value> {
+    let images = list_images_info().unwrap_or_default();
+    let clean_name = name.trim_start_matches("docker.io/").trim_start_matches("https://").trim_start_matches("http://");
+    
+    let (created_ts, size) = images.iter().find(|i| {
+        i.tag == name || i.tag == clean_name || i.tag.ends_with(name) || name.ends_with(&i.tag)
+    }).map(|i| (i.created, i.size)).unwrap_or((1600000000, 15000000));
+
+    let default_cmd = crate::image::get_image_default_cmd(name);
+
     Json(json!({
         "Id": format!("sha256:{}", hex::encode(name.as_bytes())),
         "RepoTags": [name],
-        "Created": "2026-09-09T00:00:00Z",
-        "Size": 15000000u64,
-        "VirtualSize": 15000000u64,
+        "Created": chrono::DateTime::from_timestamp(created_ts as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| "2026-09-09T00:00:00Z".to_string()),
+        "Size": size,
+        "VirtualSize": size,
         "Architecture": "amd64",
-        "Os": "linux"
+        "Os": "linux",
+        "ContainerConfig": {
+            "Cmd": default_cmd
+        },
+        "Config": {
+            "Cmd": default_cmd
+        }
     }))
+}
+
+async fn inspect_image_docker(Path(name): Path<String>) -> Json<serde_json::Value> {
+    format_inspect_image(&name)
+}
+
+async fn inspect_image_docker_2(Path((org, name)): Path<(String, String)>) -> Json<serde_json::Value> {
+    format_inspect_image(&format!("{}/{}", org, name))
+}
+
+async fn inspect_image_docker_3(Path((domain, org, name)): Path<(String, String, String)>) -> Json<serde_json::Value> {
+    format_inspect_image(&format!("{}/{}/{}", domain, org, name))
 }
 
 async fn delete_image_docker(Path(name): Path<String>) -> Response {
@@ -524,6 +588,14 @@ async fn delete_image_docker(Path(name): Path<String>) -> Response {
             { "Deleted": format!("sha256:{}", hex::encode(name.as_bytes())) }
         ])),
     ).into_response()
+}
+
+async fn delete_image_docker_2(Path((org, name)): Path<(String, String)>) -> Response {
+    delete_image_docker(Path(format!("{}/{}", org, name))).await
+}
+
+async fn delete_image_docker_3(Path((domain, org, name)): Path<(String, String, String)>) -> Response {
+    delete_image_docker(Path(format!("{}/{}/{}", domain, org, name))).await
 }
 
 async fn inspect_network_docker(Path(id): Path<String>) -> Response {
@@ -872,6 +944,39 @@ async fn stop_container_docker(Path(id): Path<String>) -> Response {
     }
 }
 
+async fn pause_container_docker(Path(id): Path<String>) -> Response {
+    match crate::container::container_pause(&id) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": e })),
+        )
+            .into_response(),
+    }
+}
+
+async fn unpause_container_docker(Path(id): Path<String>) -> Response {
+    match crate::container::container_unpause(&id) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": e })),
+        )
+            .into_response(),
+    }
+}
+
+async fn kill_container_docker(Path(id): Path<String>) -> Response {
+    match container_stop(&id) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": e })),
+        )
+            .into_response(),
+    }
+}
+
 async fn delete_container_docker(Path(id): Path<String>) -> Response {
     let _ = container_stop(&id);
     match container_delete(&id) {
@@ -910,35 +1015,88 @@ async fn list_images_docker() -> Json<serde_json::Value> {
     Json(json!(result))
 }
 
-async fn pull_image_docker(Query(params): Query<HashMap<String, String>>) -> Response {
-    let img_name = params.get("fromImage")
-        .or_else(|| params.get("from_image"))
-        .cloned()
-        .unwrap_or_else(|| "alpine".to_string());
-    let tag = params.get("tag").cloned().unwrap_or_else(|| "latest".to_string());
+fn simple_url_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            if let (Some(h1), Some(h2)) = (chars.next(), chars.next()) {
+                if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&[h1, h2]).unwrap_or(""), 16) {
+                    result.push(val as char);
+                    continue;
+                }
+            }
+        } else if b == b'+' {
+            result.push(' ');
+            continue;
+        }
+        result.push(b as char);
+    }
+    result
+}
+
+async fn pull_image_docker(req: Request) -> Response {
+    let mut from_image = None;
+    let mut tag_param = None;
+
+    if let Some(query_str) = req.uri().query() {
+        for pair in query_str.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+                let decoded_val = simple_url_decode(val);
+                if key == "fromImage" || key == "from_image" {
+                    from_image = Some(decoded_val);
+                } else if key == "tag" {
+                    tag_param = Some(decoded_val);
+                }
+            }
+        }
+    }
+
+    let img_name = from_image.unwrap_or_else(|| "alpine".to_string());
+    let tag = tag_param.unwrap_or_else(|| "latest".to_string());
+    
     let full_ref = if img_name.contains(':') {
         img_name
     } else {
         format!("{}:{}", img_name, tag)
     };
 
-    match pull_image(&full_ref).await {
-        Ok(_) => {
-            let body = format!("{}\n{}\n",
-                json!({ "status": format!("Pulling from {}", full_ref) }),
-                json!({ "status": "Status: Image is up to date", "progressDetail": {} })
-            );
-            (
-                StatusCode::OK,
-                [("Content-Type", "application/json")],
-                body,
-            ).into_response()
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::convert::Infallible>>(10);
+
+    tokio::spawn(async move {
+        let line1 = format!("{}\n", json!({ "status": format!("Pulling from {}", full_ref), "id": tag }));
+        let _ = tx.send(Ok(axum::body::Bytes::from(line1))).await;
+
+        let line2 = format!("{}\n", json!({ "status": "Extracting layers..." }));
+        let _ = tx.send(Ok(axum::body::Bytes::from(line2))).await;
+
+        match pull_image(&full_ref).await {
+            Ok(_) => {
+                let line3 = format!("{}\n", json!({
+                    "status": format!("Status: Downloaded newer image for {}", full_ref),
+                    "progressDetail": {}
+                }));
+                let _ = tx.send(Ok(axum::body::Bytes::from(line3))).await;
+            }
+            Err(e) => {
+                let line_err = format!("{}\n", json!({
+                    "errorDetail": { "message": e.to_string() },
+                    "error": e.to_string()
+                }));
+                let _ = tx.send(Ok(axum::body::Bytes::from(line_err))).await;
+            }
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": e })),
-        ).into_response(),
-    }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = axum::body::Body::from_stream(stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn create_exec_docker(

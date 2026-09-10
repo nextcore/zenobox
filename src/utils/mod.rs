@@ -75,8 +75,17 @@ pub fn parse_image_ref(image: &str) -> ImageRef {
         format!("https://{}", registry)
     };
 
+    let normalized_registry = if final_registry == "https://docker.io" 
+        || final_registry == "http://docker.io" 
+        || final_registry == "https://index.docker.io"
+        || final_registry == "http://index.docker.io" {
+        "https://registry-1.docker.io".to_string()
+    } else {
+        final_registry
+    };
+
     ImageRef {
-        registry: final_registry,
+        registry: normalized_registry,
         repository,
         tag: tag.to_string(),
     }
@@ -390,13 +399,35 @@ pub fn save_container_state(state: &ContainerState) -> Result<(), String> {
 
 pub fn load_container_state(id: &str) -> Result<ContainerState, String> {
     let data_dir = get_data_dir();
-    let l_path = lock_path(&data_dir, &format!("state_{}", id));
-    let _guard = FileLock::acquire_shared(&l_path)?;
+    let clean_id = id.trim_start_matches('/');
+    let p = state_file(&data_dir, clean_id);
+    if p.exists() {
+        let l_path = lock_path(&data_dir, &format!("state_{}", clean_id));
+        let _guard = FileLock::acquire_shared(&l_path)?;
+        if let Ok(f) = File::open(p) {
+            if let Ok(state) = serde_json::from_reader(f) {
+                return Ok(state);
+            }
+        }
+    }
 
-    let p = state_file(&data_dir, id);
-    let f = File::open(p).map_err(|e| e.to_string())?;
-    let state: ContainerState = serde_json::from_reader(f).map_err(|e| e.to_string())?;
-    Ok(state)
+    let cont_dir = Path::new(&data_dir).join("containers");
+    if let Ok(entries) = fs::read_dir(cont_dir) {
+        for entry in entries.flatten() {
+            let state_p = entry.path().join("state.json");
+            if state_p.exists() {
+                if let Ok(f) = File::open(&state_p) {
+                    if let Ok(state) = serde_json::from_reader::<_, ContainerState>(f) {
+                        if state.id == clean_id || state.id.starts_with(clean_id) {
+                            return Ok(state);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(format!("No such container: {}", id))
 }
 
 pub fn get_networks(data_dir: &str) -> Vec<NetworkConfig> {

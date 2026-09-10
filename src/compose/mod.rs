@@ -750,7 +750,25 @@ pub fn compose_up(path: &str) -> Result<String, String> {
         } else {
             0
         };
-        let cpu_limit = svc.cpus.unwrap_or(0.0);
+        let cpu_limit = if let Some(c) = svc.cpus {
+            c
+        } else if let Some(ref d) = svc.deploy {
+            if let Some(ref res) = d.resources {
+                if let Some(ref lim) = res.limits {
+                    if let Some(ref c_val) = lim.cpus {
+                        match c_val {
+                            serde_yaml::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                            serde_yaml::Value::String(s) => {
+                                expand_env_vars(s, &loaded_env).parse::<f64>().unwrap_or(0.0)
+                            }
+                            _ => 0.0,
+                        }
+                    } else { 0.0 }
+                } else { 0.0 }
+            } else { 0.0 }
+        } else {
+            0.0
+        };
         let read_only = svc.read_only.unwrap_or(false);
         let network_name = if let Some(ref nets) = svc.networks {
             if !nets.is_empty() {
@@ -794,6 +812,27 @@ pub fn compose_up(path: &str) -> Result<String, String> {
     Ok(output)
 }
 
+pub fn compose_stop(path: &str) -> Result<String, String> {
+    let f = File::open(path).map_err(|e| format!("Failed to read compose file: {}", e))?;
+    let cf: ComposeFile = serde_yaml::from_reader(f).map_err(|e| format!("Failed to parse YAML: {}", e))?;
+
+    let ordered = order_services(&cf.services);
+    let mut output = String::new();
+
+    for name in ordered.into_iter().rev() {
+        let svc = &cf.services[&name];
+        let loaded_env = load_env_file(path, svc.env_file.as_ref());
+        let raw_container_name = svc.container_name.as_ref().unwrap_or(&name);
+        let container_name_expanded = expand_env_vars(raw_container_name, &loaded_env);
+        let container_name = if container_name_expanded.is_empty() { name.clone() } else { container_name_expanded };
+
+        output.push_str(&format!("▶ Stopping service '{}' (container: {})...\n", name, container_name));
+        let _ = container_stop(&container_name);
+    }
+
+    Ok(output)
+}
+
 pub fn compose_down(path: &str) -> Result<String, String> {
     let f = File::open(path).map_err(|e| format!("Failed to read compose file: {}", e))?;
     let cf: ComposeFile = serde_yaml::from_reader(f).map_err(|e| format!("Failed to parse YAML: {}", e))?;
@@ -803,11 +842,15 @@ pub fn compose_down(path: &str) -> Result<String, String> {
 
     for name in ordered.into_iter().rev() {
         let svc = &cf.services[&name];
-        let container_name = svc.container_name.as_ref().unwrap_or(&name);
+        let loaded_env = load_env_file(path, svc.env_file.as_ref());
+        let raw_container_name = svc.container_name.as_ref().unwrap_or(&name);
+        let container_name_expanded = expand_env_vars(raw_container_name, &loaded_env);
+        let container_name = if container_name_expanded.is_empty() { name.clone() } else { container_name_expanded };
+
         output.push_str(&format!("▶ Stopping service '{}' (container: {})...\n", name, container_name));
-        let _ = container_stop(container_name);
+        let _ = container_stop(&container_name);
         output.push_str(&format!("▶ Removing container '{}'...\n", container_name));
-        let _ = container_delete(container_name);
+        let _ = container_delete(&container_name);
     }
 
     Ok(output)

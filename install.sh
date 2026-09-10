@@ -140,17 +140,21 @@ copy_binary_safe() {
 }
 
 # 3. Download from GitHub Release (or optional local build)
-LOCAL_MUSL="${SCRIPT_DIR}/target/x86_64-unknown-linux-musl/release/zenobox"
-LOCAL_GNU="${SCRIPT_DIR}/target/release/zenobox"
+if [ $USE_LOCAL -eq 1 ]; then
+    LATEST_LOCAL_BIN=""
+    if [ -d "${SCRIPT_DIR}/target" ]; then
+        LATEST_LOCAL_BIN="$(find "${SCRIPT_DIR}/target" -type f -name "zenobox" ! -path "*/deps/*" ! -path "*/incremental/*" -exec ls -1t {} + 2>/dev/null | head -n 1)"
+    fi
 
-if [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_MUSL" ]; then
-    log_info "Found local MUSL release binary at ${LOCAL_MUSL}. Copying..."
-    copy_binary_safe "$LOCAL_MUSL" "$INSTALL_DIR/bin/zenobox"
-    log_success "Local Zenobox static binary installed."
-elif [ $USE_LOCAL -eq 1 ] && [ -f "$LOCAL_GNU" ]; then
-    log_info "Found local release binary at ${LOCAL_GNU}. Copying..."
-    copy_binary_safe "$LOCAL_GNU" "$INSTALL_DIR/bin/zenobox"
-    log_success "Local Zenobox binary installed."
+    if [ -n "$LATEST_LOCAL_BIN" ] && [ -f "$LATEST_LOCAL_BIN" ]; then
+        log_info "Found latest local build binary at ${BOLD}${LATEST_LOCAL_BIN}${NC}. Copying..."
+        copy_binary_safe "$LATEST_LOCAL_BIN" "$INSTALL_DIR/bin/zenobox"
+        log_success "Local Zenobox binary installed successfully."
+    else
+        log_error "Could not find any compiled local Zenobox binary in '${SCRIPT_DIR}/target'."
+        log_error "Please build first using './build_alpine.sh' or 'cargo build --release'."
+        exit 1
+    fi
 else
     REPO_URL="https://github.com/nextcore/zenobox/releases/download/${VERSION}"
     TARBALL_MUSL="zenobox-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
