@@ -321,6 +321,13 @@ pub fn clean_container_network(container_id: &str, ip: &str, ports: &[String]) {
     let _ = run_cmd_status_silent("ip", &["link", "delete", &veth_host]);
 }
 
+fn normalize_net_name(net: &str) -> &str {
+    match net {
+        "" | "bridge" | "default" => "bridge",
+        other => other,
+    }
+}
+
 pub fn sync_hosts_entries(data_dir: &str) -> Result<(), String> {
     let l_path = lock_path(data_dir, "hosts_sync");
     let _guard = FileLock::acquire_exclusive(&l_path)?;
@@ -329,24 +336,50 @@ pub fn sync_hosts_entries(data_dir: &str) -> Result<(), String> {
     
     let mut running_ips = HashMap::new();
     let mut running_nets = HashMap::new();
+    let mut running_host_net = std::collections::HashSet::new();
+    let mut running_svc_names: HashMap<String, Vec<String>> = HashMap::new();
     for c in &containers {
         if c.status == "running" {
+            let is_host_net = c.host_network.unwrap_or(false);
+            if is_host_net {
+                running_host_net.insert(c.id.clone());
+            }
+
             if let Some(ref env) = c.env {
                 if let Some(ip) = env.get("ZENO_IP") {
                     running_ips.insert(c.id.clone(), ip.clone());
-                    if let Some(ref net) = c.network {
-                        running_nets.insert(c.id.clone(), net.clone());
+                    let net = c.network.as_ref().map(|s| s.as_str()).unwrap_or("");
+                    running_nets.insert(c.id.clone(), normalize_net_name(net).to_string());
+                }
+            }
+
+            // Extract compose service name from labels for alias resolution
+            if let Some(ref labels) = c.labels {
+                let mut aliases = Vec::new();
+                if let Some(svc_name) = labels.get("com.docker.compose.service") {
+                    if svc_name != &c.id {
+                        aliases.push(svc_name.clone());
                     }
+                }
+                if !aliases.is_empty() {
+                    running_svc_names.insert(c.id.clone(), aliases);
                 }
             }
         }
     }
+
+    // Build host /etc/hosts entries for host_network containers
+    let mut host_entries = Vec::new();
 
     for c in &containers {
         if c.status != "running" {
             continue;
         }
 
+        let is_host_net = running_host_net.contains(&c.id);
+
+        // Write rootfs /etc/hosts for ALL containers (including host_network)
+        // docker exec runs in mount namespace, so it always reads rootfs /etc/hosts
         let hosts_path = rootfs_dir(data_dir, &c.id).join("etc/hosts");
         let mut sb = String::new();
         sb.push_str("127.0.0.1\tlocalhost\n");
@@ -354,23 +387,114 @@ pub fn sync_hosts_entries(data_dir: &str) -> Result<(), String> {
         sb.push_str("# Zenobox Container Service Discovery\n");
 
         if let Some(my_ip) = running_ips.get(&c.id) {
-            sb.push_str(&format!("{}\t{}\n", my_ip, c.id));
+            sb.push_str(&format!("{}\t{}", my_ip, c.id));
+            if let Some(aliases) = running_svc_names.get(&c.id) {
+                for alias in aliases {
+                    sb.push_str(&format!("\t{}", alias));
+                }
+            }
+            sb.push('\n');
         }
 
-        let my_net = c.network.as_ref().map(|s| s.as_str()).unwrap_or("");
         for (other_id, other_ip) in &running_ips {
             if other_id != &c.id {
-                let other_net = running_nets.get(other_id).map(|s| s.as_str()).unwrap_or("");
-                if other_net == my_net {
-                    sb.push_str(&format!("{}\t{}\n", other_ip, other_id));
+                if is_host_net {
+                    // Host-network containers can reach ALL bridge containers
+                    sb.push_str(&format!("{}\t{}", other_ip, other_id));
+                    if let Some(aliases) = running_svc_names.get(other_id) {
+                        for alias in aliases {
+                            sb.push_str(&format!("\t{}", alias));
+                        }
+                    }
+                    sb.push('\n');
+                } else {
+                    // Bridge containers: only see containers in same network
+                    let my_net = normalize_net_name(c.network.as_ref().map(|s| s.as_str()).unwrap_or(""));
+                    let other_net = running_nets.get(other_id).map(|s| s.as_str()).unwrap_or("bridge");
+                    if other_net == my_net {
+                        sb.push_str(&format!("{}\t{}", other_ip, other_id));
+                        if let Some(aliases) = running_svc_names.get(other_id) {
+                            for alias in aliases {
+                                sb.push_str(&format!("\t{}", alias));
+                            }
+                        }
+                        sb.push('\n');
+                    }
                 }
             }
         }
 
         let _ = fs::write(hosts_path, sb);
+
+        // Also collect entries for system /etc/hosts (for host_network containers)
+        if is_host_net {
+            for (other_id, other_ip) in &running_ips {
+                if other_id != &c.id {
+                    let mut entry = format!("{}\t{}", other_ip, other_id);
+                    if let Some(aliases) = running_svc_names.get(other_id) {
+                        for alias in aliases {
+                            entry.push_str(&format!("\t{}", alias));
+                        }
+                    }
+                    host_entries.push(entry);
+                }
+            }
+        }
     }
 
+    // Update system /etc/hosts with zenobox managed entries
+    update_system_hosts(&host_entries);
+
     Ok(())
+}
+
+fn update_system_hosts(entries: &[String]) {
+    const BEGIN_MARKER: &str = "# >>> ZENOBOX MANAGED START >>>";
+    const END_MARKER: &str = "# <<< ZENOBOX MANAGED END <<<";
+
+    let hosts_content = fs::read_to_string("/etc/hosts").unwrap_or_default();
+
+    // Remove old zenobox managed block
+    let mut new_content = String::new();
+    let mut inside_block = false;
+    for line in hosts_content.lines() {
+        if line.trim() == BEGIN_MARKER {
+            inside_block = true;
+            continue;
+        }
+        if line.trim() == END_MARKER {
+            inside_block = false;
+            continue;
+        }
+        if !inside_block {
+            new_content.push_str(line);
+            new_content.push('\n');
+        }
+    }
+
+    // Remove trailing newlines to keep it clean
+    let trimmed = new_content.trim_end().to_string();
+
+    if entries.is_empty() {
+        let _ = fs::write("/etc/hosts", format!("{}\n", trimmed));
+    } else {
+        // Deduplicate entries
+        let mut unique_entries: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for e in entries {
+            if seen.insert(e.clone()) {
+                unique_entries.push(e.clone());
+            }
+        }
+
+        let mut final_content = trimmed;
+        final_content.push_str(&format!("\n{}\n", BEGIN_MARKER));
+        for e in &unique_entries {
+            final_content.push_str(&format!("{}\n", e));
+        }
+        final_content.push_str(&format!("{}\n", END_MARKER));
+        let _ = fs::write("/etc/hosts", final_content);
+    }
 }
 
 pub fn prune_networks(data_dir: &str) -> Result<usize, String> {

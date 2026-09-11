@@ -3,7 +3,7 @@ use std::path::Path;
 use std::fs::{self, File};
 use serde::{Serialize, Deserialize};
 
-use crate::utils::{get_data_dir, container_dir, rootfs_dir, parse_image_ref};
+use crate::utils::{get_data_dir, container_dir, rootfs_dir, parse_image_ref, load_container_state};
 use crate::container::{
     container_create, container_start, container_stop, container_delete
 };
@@ -475,7 +475,19 @@ fn inject_hosts_entries(
             continue;
         }
         let cn = svc.container_name.as_ref().unwrap_or(svc_name);
-        entries.push(format!("127.0.0.1\t{}\t{}", cn, svc_name));
+
+        // Look up the actual bridge IP from the container's state
+        let ip = load_container_state(cn)
+            .ok()
+            .and_then(|s| s.env.and_then(|e| e.get("ZENO_IP").cloned()))
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+
+        // Add both container_name and service_name as hostnames
+        if cn != svc_name {
+            entries.push(format!("{}\t{}\t{}", ip, cn, svc_name));
+        } else {
+            entries.push(format!("{}\t{}", ip, cn));
+        }
     }
 
     if let Some(svc) = services.get(current_name) {
