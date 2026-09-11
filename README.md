@@ -10,14 +10,14 @@
 
 <p align="center">
   <b>Ultra-lightweight, standalone OCI Container Runtime & Docker Engine Alternative in Rust.</b><br>
-  <i>Runs standard containers & Docker Compose with ~3.8MB RAM footprint—daemonless by default or 1Panel API compatible.</i>
+  <i>Runs standard containers & Docker Compose with ~3.9MB RAM footprint—daemonless by default or 1Panel API compatible.</i>
 </p>
 
 ---
 
 ## 🔥 Why Zenobox?
 
-- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~3.8MB RAM daemon footprint**). Uses **~95% - 98% less memory** than Docker Engine + containerd.
+- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~3.9MB RAM daemon footprint**). Uses **~95% - 98% less memory** than Docker Engine + containerd.
 - **🔌 100% Docker Engine API & Unix Socket Compatible**: Direct `/var/run/docker.sock` & TCP `2375` REST API supporting Docker API `v1.40` through `v1.47`.
 - **🖥️ 1Panel Tested & Ready**: Native auto-detection as Systemd (`docker.service`) or OpenRC. Fully tested with **1Panel AppStore & Web UI Terminal Exec**.
 - **💻 Dual Mode Flexibility**: Run standalone daemonless CLI commands directly, or run background daemon service.
@@ -80,7 +80,7 @@ alias docker-compose="zenobox compose"
 
 | Capability | Docker Engine (`dockerd`) | Zenobox Runtime |
 | :--- | :--- | :--- |
-| **Memory Footprint (Idle Daemon)** | Heavy (~150MB - 300MB RAM) | **Ultra-Lightweight (~3.8MB - 6.8MB RAM)** |
+| **Memory Footprint (Idle Daemon)** | Heavy (~150MB - 300MB RAM) | **Ultra-Lightweight (~3.9MB RAM)** |
 | **Standalone Daemonless Mode** | ❌ Requires running daemon | ✅ **Supported (Daemonless by default)** |
 | **Control Panel Support (1Panel)** | ✅ Supported | ✅ **100% 1Panel Tested & Compatible** |
 | **Single-Node Containers & Compose** | ✅ Supported | ✅ **100% Supported** |
@@ -97,7 +97,7 @@ Zenobox is designed to run efficiently even on low-spec VPS instances ($2/mo VPS
 
 | Process | Memory Footprint (RSS) | Memory Reduction | CPU Overhead |
 | :--- | :--- | :--- | :--- |
-| **Zenobox Daemon (`zenobox daemon`)** | **~3.8 MB - 6.8 MB RAM** *(Peak ~10M)* | **~95% - 98% Less Memory** | **~0.1% CPU (Instant <1ms response)** |
+| **Zenobox Daemon (`zenobox daemon`)** | **~3.9 MB RAM** *(Peak ~5.6M)* | **~95% - 98% Less Memory** | **~0.1% CPU (Instant <1ms response)** |
 | **Docker Engine (`dockerd` + `containerd`)** | **~150 MB - 250 MB RAM** | Standard Baseline | ~2% - 5% CPU |
 
 ---
