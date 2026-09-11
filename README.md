@@ -17,7 +17,7 @@
 
 ## 🔥 Why Zenobox?
 
-- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~3.8MB RAM daemon footprint**). Uses **~95% - 98% less memory** than Docker Engine + containerd. Zenobox `v0.2.13`.
+- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~3.8MB RAM daemon footprint**). Uses **~95% - 98% less memory** than Docker Engine + containerd.
 - **🔌 100% Docker Engine API & Unix Socket Compatible**: Direct `/var/run/docker.sock` & TCP `2375` REST API supporting Docker API `v1.40` through `v1.47`.
 - **🖥️ 1Panel Tested & Ready**: Native auto-detection as Systemd (`docker.service`) or OpenRC. Fully tested with **1Panel AppStore & Web UI Terminal Exec**.
 - **💻 Dual Mode Flexibility**: Run standalone daemonless CLI commands directly, or run background daemon service.
