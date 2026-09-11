@@ -365,18 +365,24 @@ pub async fn pull_image_with_progress(image: &str, progress_cb: Option<ProgressC
         serde_json::to_string_pretty(&image_config_json).unwrap()
     ).map_err(|e| e.to_string())?;
 
-    let mut total_bytes: u64 = 0;
-    let layers_base = Path::new(&layers_cache_dir);
-    for dig in &layer_digests {
-        let l_rootfs = layers_base.join(dig).join("rootfs");
-        if let Ok(sz) = dir_size(&l_rootfs) {
-            total_bytes += sz;
+    let image_cache_dir_clone = image_cache_dir.clone();
+    let layers_cache_dir_clone = layers_cache_dir.clone();
+    let layer_digests_clone = layer_digests.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut total_bytes: u64 = 0;
+        let layers_base = Path::new(&layers_cache_dir_clone);
+        for dig in &layer_digests_clone {
+            let l_rootfs = layers_base.join(dig).join("rootfs");
+            if let Ok(sz) = dir_size(&l_rootfs) {
+                total_bytes += sz;
+            }
         }
-    }
-    if total_bytes == 0 {
-        total_bytes = 15_000_000;
-    }
-    let _ = fs::write(format!("{}/size.json", image_cache_dir), total_bytes.to_string());
+        if total_bytes == 0 {
+            total_bytes = 25_000_000;
+        }
+        let _ = fs::write(format!("{}/size.json", image_cache_dir_clone), total_bytes.to_string());
+    });
 
     let mut final_cmd = Vec::new();
     if let Some(entrypoint) = image_config_json.get("config").and_then(|c| c.get("Entrypoint")).and_then(|e| e.as_array()) {
@@ -646,47 +652,24 @@ pub fn list_images_info() -> Result<Vec<ImageInfo>, String> {
 
                 let size_file = path.join("size.json");
                 let size = if let Ok(s) = fs::read_to_string(&size_file) {
-                    s.trim().parse::<u64>().unwrap_or_else(|_| {
-                        let layers_json_path = path.join("layers.json");
-                        let mut real_size: u64 = 0;
-                        if layers_json_path.exists() {
-                            if let Ok(file) = File::open(&layers_json_path) {
-                                if let Ok(layers) = serde_json::from_reader::<_, Vec<String>>(file) {
-                                    let layers_dir = Path::new(&data_dir).join("images").join("layers");
-                                    for layer in layers {
-                                        if let Ok(sz) = dir_size(layers_dir.join(&layer).join("rootfs")) {
-                                            real_size += sz;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if real_size == 0 {
-                            real_size = dir_size(&path).unwrap_or(15_000_000);
-                        }
-                        let _ = fs::write(&size_file, real_size.to_string());
-                        real_size
-                    })
+                    s.trim().parse::<u64>().unwrap_or(25_000_000)
                 } else {
                     let layers_json_path = path.join("layers.json");
-                    let mut real_size: u64 = 0;
-                    if layers_json_path.exists() {
+                    let estimated_size = if layers_json_path.exists() {
                         if let Ok(file) = File::open(&layers_json_path) {
                             if let Ok(layers) = serde_json::from_reader::<_, Vec<String>>(file) {
-                                let layers_dir = Path::new(&data_dir).join("images").join("layers");
-                                for layer in layers {
-                                    if let Ok(sz) = dir_size(layers_dir.join(&layer).join("rootfs")) {
-                                        real_size += sz;
-                                    }
-                                }
+                                (layers.len() as u64) * 20_000_000
+                            } else {
+                                25_000_000
                             }
+                        } else {
+                            25_000_000
                         }
-                    }
-                    if real_size == 0 {
-                        real_size = dir_size(&path).unwrap_or(15_000_000);
-                    }
-                    let _ = fs::write(&size_file, real_size.to_string());
-                    real_size
+                    } else {
+                        25_000_000
+                    };
+                    let _ = fs::write(&size_file, estimated_size.to_string());
+                    estimated_size
                 };
 
                 let created = fs::metadata(&path)
