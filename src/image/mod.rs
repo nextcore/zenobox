@@ -181,7 +181,13 @@ async fn get_registry_token(client: &reqwest::Client, img: &ImageRef) -> Result<
     Ok(String::new())
 }
 
+pub type ProgressCallback = std::sync::Arc<dyn Fn(String, String) + Send + Sync>;
+
 pub async fn pull_image(image: &str) -> Result<Vec<String>, String> {
+    pull_image_with_progress(image, None).await
+}
+
+pub async fn pull_image_with_progress(image: &str, progress_cb: Option<ProgressCallback>) -> Result<Vec<String>, String> {
     let data_dir = get_data_dir();
     let img_ref = parse_image_ref(image);
     let cache_dir_name = format!("{}_{}", img_ref.repository, img_ref.tag)
@@ -196,7 +202,12 @@ pub async fn pull_image(image: &str) -> Result<Vec<String>, String> {
         return Ok(get_image_default_cmd(image));
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let token = match get_registry_token(&client, &img_ref).await {
         Ok(t) => t,
         Err(e) => {
@@ -271,60 +282,77 @@ pub async fn pull_image(image: &str) -> Result<Vec<String>, String> {
         .ok_or_else(|| "Missing layers in manifest".to_string())?;
 
     let mut layer_digests = Vec::new();
-    for (_i, layer) in layers.iter().enumerate() {
+    let mut download_tasks = Vec::new();
+
+    for layer in layers {
         let digest = layer.get("digest").and_then(|d| d.as_str()).ok_or_else(|| "Missing layer digest".to_string())?;
-        let digest_clean = digest.trim_start_matches("sha256:");
-        layer_digests.push(digest_clean.to_string());
+        let digest_clean = digest.trim_start_matches("sha256:").to_string();
+        let short_id = if digest_clean.len() >= 12 { digest_clean[..12].to_string() } else { digest_clean.clone() };
+        layer_digests.push(digest_clean.clone());
 
-        let layer_dir = format!("{}/{}", layers_cache_dir, digest_clean);
-        let layer_rootfs = format!("{}/rootfs", layer_dir);
-        let tar_gz_path = format!("{}/{}.tar.gz", layer_dir, digest_clean);
+        let layers_cache_dir_clone = layers_cache_dir.clone();
+        let registry = img_ref.registry.clone();
+        let repository = img_ref.repository.clone();
+        let digest_str = digest.to_string();
+        let token_clone = token.clone();
+        let client_clone = client.clone();
+        let cb_clone = progress_cb.clone();
 
-        fs::create_dir_all(&layer_dir).map_err(|e| e.to_string())?;
+        download_tasks.push(tokio::spawn(async move {
+            let layer_dir = format!("{}/{}", layers_cache_dir_clone, digest_clean);
+            let layer_rootfs = format!("{}/rootfs", layer_dir);
+            let tar_gz_path = format!("{}/{}.tar.gz", layer_dir, digest_clean);
 
-        if !Path::new(&layer_rootfs).exists() {
-            if !Path::new(&tar_gz_path).exists() {
-                let blob_url = format!("{}/v2/{}/blobs/{}", img_ref.registry, img_ref.repository, digest);
-                let mut req_blob = client.get(&blob_url);
-                req_blob = apply_auth_header(req_blob, &token);
-                let resp_blob = req_blob.send().await.map_err(|e| e.to_string())?;
-                if !resp_blob.status().is_success() {
-                    return Err(format!("Layer download failed: status {}", resp_blob.status()));
+            fs::create_dir_all(&layer_dir).map_err(|e| e.to_string())?;
+
+            if !Path::new(&layer_rootfs).exists() {
+                if let Some(ref cb) = cb_clone {
+                    cb(short_id.clone(), "Downloading".to_string());
                 }
-                let blob_bytes = resp_blob.bytes().await.map_err(|e| e.to_string())?;
-                fs::write(&tar_gz_path, &blob_bytes).map_err(|e| e.to_string())?;
+
+                if !Path::new(&tar_gz_path).exists() {
+                    let blob_url = format!("{}/v2/{}/blobs/{}", registry, repository, digest_str);
+                    let mut req_blob = client_clone.get(&blob_url);
+                    req_blob = apply_auth_header(req_blob, &token_clone);
+                    let resp_blob = req_blob.send().await.map_err(|e| e.to_string())?;
+                    if !resp_blob.status().is_success() {
+                        return Err(format!("Layer download failed for {}: status {}", digest_str, resp_blob.status()));
+                    }
+                    let blob_bytes = resp_blob.bytes().await.map_err(|e| e.to_string())?;
+                    fs::write(&tar_gz_path, &blob_bytes).map_err(|e| e.to_string())?;
+                }
+
+                if let Some(ref cb) = cb_clone {
+                    cb(short_id.clone(), "Extracting".to_string());
+                }
+
+                let layer_rootfs_clone = layer_rootfs.clone();
+                let tar_gz_path_clone = tar_gz_path.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    fs::create_dir_all(&layer_rootfs_clone).map_err(|e| e.to_string())?;
+                    let tar_gz = File::open(&tar_gz_path_clone).map_err(|e| e.to_string())?;
+                    let tar = flate2::read::GzDecoder::new(tar_gz);
+                    let mut archive = tar::Archive::new(tar);
+                    archive.set_preserve_permissions(true);
+                    archive.set_unpack_xattrs(false);
+                    let _ = archive.unpack(&layer_rootfs_clone);
+                    let _ = fs::remove_file(&tar_gz_path_clone);
+                    Ok(())
+                })
+                .await
+                .map_err(|e| format!("Unpack join error: {}", e))??;
             }
 
-            let layer_rootfs_clone = layer_rootfs.clone();
-            let tar_gz_path_clone = tar_gz_path.clone();
-            tokio::task::spawn_blocking(move || -> Result<(), String> {
-                fs::create_dir_all(&layer_rootfs_clone).map_err(|e| e.to_string())?;
-                let tar_gz = File::open(&tar_gz_path_clone).map_err(|e| e.to_string())?;
-                let tar = flate2::read::GzDecoder::new(tar_gz);
-                let mut archive = tar::Archive::new(tar);
-                archive.set_preserve_permissions(true);
-                archive.set_unpack_xattrs(false);
+            if let Some(ref cb) = cb_clone {
+                cb(short_id, "Pull complete".to_string());
+            }
 
-                if let Ok(entries) = archive.entries() {
-                    for entry_result in entries {
-                        if let Ok(mut entry) = entry_result {
-                            if let Ok(path) = entry.path() {
-                                let target_path = Path::new(&layer_rootfs_clone).join(&path);
-                                if let Some(parent) = target_path.parent() {
-                                    let _ = fs::create_dir_all(parent);
-                                }
-                                let _ = entry.unpack_in(&layer_rootfs_clone);
-                            }
-                        }
-                    }
-                }
-                
-                let _ = fs::remove_file(&tar_gz_path_clone);
-                Ok(())
-            })
-            .await
-            .map_err(|e| format!("Unpack join error: {}", e))??;
-        }
+            Ok::<(), String>(())
+        }));
+    }
+
+    for task in download_tasks {
+        task.await.map_err(|e| format!("Layer download task error: {}", e))??;
     }
 
     fs::write(
@@ -759,13 +787,30 @@ pub fn remove_image(image: &str) -> Result<(), String> {
                 if entry.path().is_dir() && entry.file_name() != "layers" {
                     let folder_name = entry.file_name().to_string_lossy().to_string();
                     let name_normalized = folder_name.replace('_', "/");
-                    let hex_id = hex::encode(name_normalized.as_bytes());
+                    
+                    use sha2::{Sha256, Digest};
+                    let e_ref = parse_image_ref(&name_normalized);
+                    let e_canonical = format!("{}:{}", e_ref.repository, e_ref.tag);
+                    let e_short = format!("{}:{}", e_ref.repository.trim_start_matches("library/"), e_ref.tag);
+                    
+                    let e_hash_raw = hex::encode(Sha256::digest(e_canonical.as_bytes()));
+                    let e_hash_short = hex::encode(Sha256::digest(e_short.as_bytes()));
+                    let hex_folder_name = hex::encode(folder_name.as_bytes());
+                    let hex_name_normalized = hex::encode(name_normalized.as_bytes());
 
-                    if folder_name == image
+                    let is_match = folder_name == image
                         || name_normalized == image
-                        || hex_id.starts_with(image_clean)
-                        || folder_name.contains(image)
-                    {
+                        || e_canonical == image
+                        || e_short == image
+                        || (!image_clean.is_empty() && (
+                            e_hash_raw.starts_with(image_clean)
+                            || e_hash_short.starts_with(image_clean)
+                            || folder_name.starts_with(image_clean)
+                            || hex_folder_name.starts_with(image_clean)
+                            || hex_name_normalized.starts_with(image_clean)
+                        ));
+
+                    if is_match {
                         target_dir = Some(entry.path());
                         break;
                     }

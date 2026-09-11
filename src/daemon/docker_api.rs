@@ -351,8 +351,13 @@ async fn system_df_docker() -> Response {
             }
         }
 
+        use sha2::{Sha256, Digest};
+        let img_ref = crate::utils::parse_image_ref(&img.tag);
+        let canonical_tag = format!("{}:{}", img_ref.repository, img_ref.tag);
+        let img_id = format!("sha256:{}", hex::encode(Sha256::digest(canonical_tag.as_bytes())));
+
         images_json.push(json!({
-            "Id": format!("sha256:{}", hex::encode(img.tag.as_bytes())),
+            "Id": img_id,
             "ParentId": "",
             "RepoTags": repo_tags,
             "RepoDigests": [],
@@ -591,8 +596,13 @@ fn format_inspect_image(name: &str) -> Json<serde_json::Value> {
 
     let default_cmd = crate::image::get_image_default_cmd(name);
 
+    use sha2::{Sha256, Digest};
+    let img_ref = crate::utils::parse_image_ref(name);
+    let canonical_tag = format!("{}:{}", img_ref.repository, img_ref.tag);
+    let img_id = format!("sha256:{}", hex::encode(Sha256::digest(canonical_tag.as_bytes())));
+
     Json(json!({
-        "Id": format!("sha256:{}", hex::encode(name.as_bytes())),
+        "Id": img_id,
         "RepoTags": [name],
         "Created": chrono::DateTime::from_timestamp(created_ts as i64, 0)
             .map(|dt| dt.to_rfc3339())
@@ -1162,16 +1172,26 @@ async fn pull_image_docker(req: Request) -> Response {
         format!("{}:{}", img_name, tag)
     };
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::convert::Infallible>>(10);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::convert::Infallible>>(50);
 
     tokio::spawn(async move {
         let line1 = format!("{}\n", json!({ "status": format!("Pulling from {}", full_ref), "id": tag }));
         let _ = tx.send(Ok(axum::body::Bytes::from(line1))).await;
 
-        let line2 = format!("{}\n", json!({ "status": "Extracting layers..." }));
-        let _ = tx.send(Ok(axum::body::Bytes::from(line2))).await;
+        let tx_cb = tx.clone();
+        let progress_cb: crate::image::ProgressCallback = std::sync::Arc::new(move |id: String, status: String| {
+            let tx_inner = tx_cb.clone();
+            tokio::spawn(async move {
+                let line = format!("{}\n", json!({
+                    "id": id,
+                    "status": status,
+                    "progressDetail": {}
+                }));
+                let _ = tx_inner.send(Ok(axum::body::Bytes::from(line))).await;
+            });
+        });
 
-        match pull_image(&full_ref).await {
+        match crate::image::pull_image_with_progress(&full_ref, Some(progress_cb)).await {
             Ok(_) => {
                 let line3 = format!("{}\n", json!({
                     "status": format!("Status: Downloaded newer image for {}", full_ref),
