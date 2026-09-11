@@ -58,7 +58,7 @@ if [ -n "$GIT_TAG" ]; then
 elif [ -n "$CARGO_VER" ]; then
     DEFAULT_VERSION="v${CARGO_VER}"
 else
-    DEFAULT_VERSION="v0.2.10"
+    DEFAULT_VERSION="v0.2.11"
 fi
 
 DEFAULT_INSTALL_DIR="/opt/zenobox"

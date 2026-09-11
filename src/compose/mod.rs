@@ -780,9 +780,20 @@ pub fn compose_up(path: &str) -> Result<String, String> {
             "bridge"
         };
 
+        let abs_config_path = fs::canonicalize(compose_path_buf)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.to_string());
+        let abs_workdir = compose_path_buf
+            .parent()
+            .and_then(|p| fs::canonicalize(p).ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+
         let mut compose_labels = HashMap::new();
         compose_labels.insert("com.docker.compose.project".to_string(), project_name.clone());
         compose_labels.insert("com.docker.compose.service".to_string(), name.clone());
+        compose_labels.insert("com.docker.compose.project.config_files".to_string(), abs_config_path);
+        compose_labels.insert("com.docker.compose.project.working_dir".to_string(), abs_workdir);
 
         output.push_str(&format!("  ▶ Creating container '{}'...\n", container_name));
         let is_host_net = svc.network_mode.as_deref() == Some("host") || network_name == "host";
