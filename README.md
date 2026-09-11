@@ -17,14 +17,13 @@
 
 ## 🔥 Why Zenobox?
 
-- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~3.8MB RAM daemon footprint**). Uses **95% - 98% less memory** than Docker Engine + containerd.
-- **🔌 100% Docker Engine API & Unix Socket Compatible**: Direct `/var/run/docker.sock` & TCP `2375` REST API supporting Docker API `v1.40` through `v1.47` (including `/_ping`, `/version`, `/info`, `/containers/*`, `/images/*`, `/networks/*`, `/volumes/*`).
-- **🖥️ 1Panel Tested & Ready**: Native auto-detection and registration as Systemd (`docker.service`) or OpenRC service. Fully tested and compatible with **1Panel** control panel & 1Panel Web UI Terminal.
-- **💻 Dual Mode Flexibility (Daemonless or Service)**: Run standalone daemonless CLI commands directly, or run background daemon service.
-- **🖥️ Real-time Interactive PTY Terminal**: Full WebSocket & CLI terminal exec (`/attach/ws`, `/exec/{id}/ws`, `docker exec -it`) powered by `portable-pty` with dynamic window resize support.
-- **📊 Live Cgroup Stats Streaming**: Streaming CPU & Memory usage metrics directly from Linux `cgroups` (v1 & v2).
+- **⚡ Lightweight & Blazing Fast**: Single native Rust binary (~15MB static MUSL build, **~3.8MB RAM daemon footprint**). Uses **~95% - 98% less memory** than Docker Engine + containerd.
+- **🔌 100% Docker Engine API & Unix Socket Compatible**: Direct `/var/run/docker.sock` & TCP `2375` REST API supporting Docker API `v1.40` through `v1.47`.
+- **🖥️ 1Panel Tested & Ready**: Native auto-detection as Systemd (`docker.service`) or OpenRC. Fully tested with **1Panel AppStore & Web UI Terminal Exec**.
+- **💻 Dual Mode Flexibility**: Run standalone daemonless CLI commands directly, or run background daemon service.
+- **🖥️ Real-time Interactive PTY Terminal**: Full WebSocket & CLI terminal exec (`/exec/{id}/ws`, `docker exec -it`) with dynamic window resize support.
+- **📊 Live Cgroup Stats Streaming**: Streaming CPU & Memory metrics directly from Linux `cgroups` (v1 & v2).
 - **🚀 Embedded Docker Compose Engine**: Native YAML orchestrator supporting `.env` interpolation (`${VAR:-default}`).
-- **🔒 Production Ready & Rock Solid**: Non-blocking state persistence, 10MB auto-rotating container logs, and boot-time network auto-recovery.
 
 ---
 
@@ -34,27 +33,18 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nextcore/zenobox/main/install.sh | sudo bash
 ```
-*Auto-detects Linux distribution (Ubuntu, Debian, LMDE, Alpine, RHEL/CentOS, Arch), installs static MUSL binary, configures `/var/run/docker.sock` and `docker.service` Systemd/OpenRC background daemon.*
+*Auto-detects Linux distribution, installs static MUSL binary, configures `/var/run/docker.sock` and Systemd/OpenRC background daemon.*
 
 ### Uninstallation
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nextcore/zenobox/main/uninstall.sh | sudo bash
 ```
-*To also purge image cache and container data, add `--purge`:* `sudo ./uninstall.sh --purge`
+*To also purge image cache and container data:* `sudo ./uninstall.sh --purge`
 
-### Build & Release from Source
+### Build from Source
 ```bash
-git clone https://github.com/nextcore/zenobox.git
-cd zenobox
-
-# Build standard release
-cargo build --release
-
-# Build static MUSL binary for Alpine / Any Linux:
+git clone https://github.com/nextcore/zenobox.git && cd zenobox
 ./build_alpine.sh --clean
-
-# Or build & package release tarball (dist/) with SHA256 & optional GitHub release:
-./release_alpine.sh --clean --clean-dist
 ```
 
 ---
@@ -79,42 +69,9 @@ zenobox exec my-nginx sh
 zenobox compose up -d -f docker-compose.yml
 zenobox compose down -f docker-compose.yml
 
-# 6. Start API Daemon manually (Unix Socket + TCP 2375)
-zenobox daemon --port 2375 --socket /var/run/docker.sock
-```
-
----
-
-## 🌐 API & 1Panel Integration
-
-Zenobox provides a drop-in replacement for the Docker Engine API over both **Unix Domain Socket (`/var/run/docker.sock`)** and **HTTP TCP (`:2375`)**, fully tested with **1Panel**:
-
-| Feature | Docker Engine API Endpoint | Native REST Endpoint |
-| :--- | :--- | :--- |
-| **Ping & Version** | `GET /v1.41/_ping`, `GET /v1.41/version` | `GET /_ping`, `GET /version` |
-| **Engine Info** | `GET /v1.41/info` | `GET /info` |
-| **Container Lifecycle** | `GET /v1.41/containers/json`, `POST /create` | `GET/POST /api/v1/containers` |
-| **Network & Volume Inspect** | `GET /v1.41/networks/{id}`, `GET /v1.41/volumes/{name}` | `GET /api/v1/networks`, `GET /api/v1/volumes` |
-| **Live Stats Stream** | `GET /v1.41/containers/{id}/stats` | `GET /api/v1/containers/{id}/stats` |
-| **Interactive Terminal (WebSocket & CLI PTY)** | `GET /v1.41/containers/{id}/attach/ws` | `GET /api/v1/containers/{id}/terminal` |
-| **Exec Session** | `POST /v1.41/containers/{id}/exec`, `/exec/{id}/start` | `POST /api/v1/exec` |
-
----
-
-## 🔗 Transparent Docker & Docker Compose Replacement
-
-Use Zenobox seamlessly in place of `docker` and `docker-compose`:
-
-```bash
-# Set shell aliases
+# 6. Transparent Docker Symlinks (automatic via install.sh)
 alias docker="zenobox"
 alias docker-compose="zenobox compose"
-```
-
-Or create global system symlinks (done automatically by `install.sh`):
-```bash
-sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker
-sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker-compose
 ```
 
 ---
@@ -125,9 +82,8 @@ sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker-compose
 | :--- | :--- | :--- |
 | **Memory Footprint (Idle Daemon)** | Heavy (~150MB - 300MB RAM) | **Ultra-Lightweight (~3.8MB - 6.8MB RAM)** |
 | **Standalone Daemonless Mode** | ❌ Requires running daemon | ✅ **Supported (Daemonless by default)** |
-| **Control Panel Support** | ✅ Supported | ✅ **1Panel Tested & Compatible (`/var/run/docker.sock` & Web UI Terminal)** |
+| **Control Panel Support (1Panel)** | ✅ Supported | ✅ **100% 1Panel Tested & Compatible** |
 | **Single-Node Containers & Compose** | ✅ Supported | ✅ **100% Supported** |
-| **Bridge Networking & Ports** | ✅ `docker0` | ✅ `zenobr0` (`veth` + `iptables` NAT) |
 | **Interactive PTY & Live Stats** | ✅ Supported | ✅ **Supported (WebSocket + Cgroups)** |
 | **Docker API Compatibility** | ✅ Native | ✅ **v1.40 - v1.47 Support** |
 | **Image Building (`docker build`)** | ✅ Built-in BuildKit | ❌ **Not Supported** (Pull pre-built images from registry) |
@@ -135,27 +91,14 @@ sudo ln -sf /opt/zenobox/bin/zenobox /usr/local/bin/docker-compose
 
 ---
 
-## ⚡ Memory Footprint & Resource Consumption
+## ⚡ Memory Footprint
 
 Zenobox is designed to run efficiently even on low-spec VPS instances ($2/mo VPS with 512MB RAM):
 
 | Process | Memory Footprint (RSS) | Memory Reduction | CPU Overhead |
 | :--- | :--- | :--- | :--- |
-| **Zenobox Daemon (`zenobox daemon`)** | **~3.8 MB - 6.8 MB RAM** *(Peak ~10.2M - 23.3M)* | **~95% - 98% Less Memory** | **~0.1% CPU (Instant <1ms response)** |
+| **Zenobox Daemon (`zenobox daemon`)** | **~3.8 MB - 6.8 MB RAM** *(Peak ~10M)* | **~95% - 98% Less Memory** | **~0.1% CPU (Instant <1ms response)** |
 | **Docker Engine (`dockerd` + `containerd`)** | **~150 MB - 250 MB RAM** | Standard Baseline | ~2% - 5% CPU |
-
----
-
-## ⚠️ Known Limitations & Compatibility Notes
-
-1. **❌ Image Building (`docker build` / `buildkit`)**
-   - **Why**: Image building requires complex layer overlay caching and compiler tooling that bloats runtime binaries.
-   - **Workflow**: Pull pre-compiled OCI images directly from registries (Docker Hub, GHCR, Quay) or use CI/CD pipelines (GitHub Actions, GitLab CI) to build images.
-2. **❌ Multi-Host Clustering (`docker swarm`)**
-   - **Why**: Zenobox targets single-node Linux servers, VPS instances, edge devices, and panel backends.
-   - **Workflow**: For single-host multi-container stacks, use `zenobox compose` or native REST API.
-3. **✅ 1Panel AppStore & Web UI Terminal Management**
-   - **Status**: 1Panel App Store installations, image pulling, Compose lifecycle (`start`, `stop`, `restart`), container **Pause / Resume**, stats streaming, **instant non-blocking API/CLI**, and **Web UI Terminal Exec (`/bin/sh`)** work **100% smoothly** in Zenobox `v0.2.12`.
 
 ---
 
