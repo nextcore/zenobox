@@ -151,7 +151,9 @@ copy_binary_safe() {
 # 3. Download from GitHub Release (or optional local build)
 if [ $USE_LOCAL -eq 1 ]; then
     LATEST_LOCAL_BIN=""
-    if [ -d "${SCRIPT_DIR}/target" ]; then
+    if [ -f "${SCRIPT_DIR}/dist/zenobox" ]; then
+        LATEST_LOCAL_BIN="${SCRIPT_DIR}/dist/zenobox"
+    elif [ -d "${SCRIPT_DIR}/target" ]; then
         LATEST_LOCAL_BIN="$(find "${SCRIPT_DIR}/target" -type f -name "zenobox" ! -path "*/deps/*" ! -path "*/incremental/*" -exec ls -1t {} + 2>/dev/null | head -n 1)"
     fi
 
@@ -160,7 +162,7 @@ if [ $USE_LOCAL -eq 1 ]; then
         copy_binary_safe "$LATEST_LOCAL_BIN" "$INSTALL_DIR/bin/zenobox"
         log_success "Local Zenobox binary installed successfully."
     else
-        log_error "Could not find any compiled local Zenobox binary in '${SCRIPT_DIR}/target'."
+        log_error "Could not find any compiled local Zenobox binary in '${SCRIPT_DIR}/dist' or '${SCRIPT_DIR}/target'."
         log_error "Please build first using './build_alpine.sh' or 'cargo build --release'."
         exit 1
     fi
@@ -173,6 +175,7 @@ else
 
     DOWNLOAD_SUCCESS=0
     TARBALL_FILE=""
+    IS_RAW_BINARY=0
 
     download_file() {
         local file="$1"
@@ -192,25 +195,37 @@ else
         if download_file "$TARBALL_GNU" && [ -s "$TARBALL_GNU" ]; then
             TARBALL_FILE="$TARBALL_GNU"
             DOWNLOAD_SUCCESS=1
+        else
+            log_info "Tarball not found, attempting direct binary download (zenobox)..."
+            if download_file "zenobox" && [ -s "zenobox" ]; then
+                TARBALL_FILE="zenobox"
+                DOWNLOAD_SUCCESS=1
+                IS_RAW_BINARY=1
+            fi
         fi
     fi
 
     if [ $DOWNLOAD_SUCCESS -eq 1 ] && [ -n "$TARBALL_FILE" ]; then
-        log_info "Extracting Zenobox package..."
-        # Extract binary directly into bin/
-        $SUDO_CMD tar -xzf "$TARBALL_FILE" --strip-components=1 -C "$INSTALL_DIR/bin/" 2>/dev/null || \
-        $SUDO_CMD tar -xzf "$TARBALL_FILE" -C "$INSTALL_DIR/bin/" 2>/dev/null || \
-        $SUDO_CMD mv "$TARBALL_FILE" "$INSTALL_DIR/bin/zenobox"
+        if [ $IS_RAW_BINARY -eq 1 ]; then
+            log_info "Installing direct binary package..."
+            $SUDO_CMD mv "$TARBALL_FILE" "$INSTALL_DIR/bin/zenobox"
+        else
+            log_info "Extracting Zenobox package..."
+            # Extract binary directly into bin/
+            $SUDO_CMD tar -xzf "$TARBALL_FILE" --strip-components=1 -C "$INSTALL_DIR/bin/" 2>/dev/null || \
+            $SUDO_CMD tar -xzf "$TARBALL_FILE" -C "$INSTALL_DIR/bin/" 2>/dev/null || \
+            $SUDO_CMD mv "$TARBALL_FILE" "$INSTALL_DIR/bin/zenobox"
 
-        # Fix nested binary path if extracted with directory prefix
-        for nested in "$INSTALL_DIR/bin/zenobox-"*/zenobox; do
-            if [ -f "$nested" ]; then
-                $SUDO_CMD mv "$nested" "$INSTALL_DIR/bin/zenobox"
-                $SUDO_CMD rm -rf "$(dirname "$nested")"
-            fi
-        done
+            # Fix nested binary path if extracted with directory prefix
+            for nested in "$INSTALL_DIR/bin/zenobox-"*/zenobox; do
+                if [ -f "$nested" ]; then
+                    $SUDO_CMD mv "$nested" "$INSTALL_DIR/bin/zenobox"
+                    $SUDO_CMD rm -rf "$(dirname "$nested")"
+                fi
+            done
+        fi
 
-        rm -f "$TARBALL_FILE" "$TARBALL_MUSL" "$TARBALL_GNU" 2>/dev/null
+        rm -f "$TARBALL_FILE" "$TARBALL_MUSL" "$TARBALL_GNU" "zenobox" 2>/dev/null
         $SUDO_CMD chmod +x "$INSTALL_DIR/bin/zenobox"
         log_success "Zenobox binary downloaded and installed successfully from GitHub Releases."
     else
@@ -277,7 +292,7 @@ for RC in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_aliases" "$HOME/.profile";
     add_alias_if_missing "$RC"
 done
 
-# 6. Auto-Detect Distro & Configure Docker Daemon Service (1Panel Compatible)
+# 6. Auto-Detect Distro & Configure Docker Daemon Service (1Panel & aaPanel Compatible)
 log_info "Detecting Linux distribution and service manager..."
 
 DISTRO_INFO="Unknown Linux"
@@ -287,7 +302,7 @@ fi
 log_info "Detected OS: ${BOLD}${DISTRO_INFO}${NC}"
 
 if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ]; then
-    log_info "Configuring Systemd service 'docker.service' for 1Panel compatibility..."
+    log_info "Configuring Systemd service 'docker.service' for aaPanel & 1Panel compatibility..."
 
     SERVICE_FILE="/etc/systemd/system/docker.service"
     SERVICE_CONTENT="[Unit]
@@ -296,7 +311,10 @@ After=network.target
 
 [Service]
 Type=simple
+ExecStartPre=/bin/sh -c \"rm -f /var/run/docker.pid\"
 ExecStart=${INSTALL_DIR}/bin/zenobox daemon --port 2375
+ExecStartPost=/bin/sh -c \"echo \$MAINPID > /var/run/docker.pid\"
+ExecStopPost=/bin/sh -c \"rm -f /var/run/docker.pid\"
 Restart=always
 RestartSec=3
 
@@ -308,7 +326,7 @@ Alias=docker.service"
     $SUDO_CMD systemctl daemon-reload 2>/dev/null
     $SUDO_CMD systemctl enable docker 2>/dev/null
     $SUDO_CMD systemctl restart docker 2>/dev/null || $SUDO_CMD systemctl start docker 2>/dev/null
-    log_success "Systemd 'docker.service' registered and activated on port 2375."
+    log_success "Systemd 'docker.service' registered and activated on port 2375 (PID tracking enabled for aaPanel)."
 
 elif command -v rc-service >/dev/null 2>&1 || [ -d /etc/init.d ]; then
     log_info "Configuring OpenRC/Init service 'docker'..."
@@ -319,7 +337,7 @@ description=\"Zenobox Container Engine Daemon\"
 command=\"${INSTALL_DIR}/bin/zenobox\"
 command_args=\"daemon --port 2375\"
 command_background=\"yes\"
-pidfile=\"/run/zenobox.pid\""
+pidfile=\"/var/run/docker.pid\""
 
     echo "$INIT_CONTENT" | $SUDO_CMD tee "$INIT_FILE" >/dev/null
     $SUDO_CMD chmod +x "$INIT_FILE"
